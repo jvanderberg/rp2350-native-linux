@@ -15,9 +15,12 @@
  *                           and 2.5 points of them
  *
  * meas is a process: while it doesn't have the CPU (another process, a
- * switch) it misses edges. So the frequency and duty are the medians over
- * the periods it saw (rise to rise), which a period with a gap in it
- * doesn't move, rather than totals over the whole time.
+ * switch) it misses edges. So it times each period it sees (rise to rise)
+ * and its high time, and drops the periods more than 2% (or 2 us, the
+ * clock's steps) off their median (a gap in them). The frequency is the
+ * mean of the rest, which averages out the clock's 1 us steps; the duty
+ * the median of their high fractions, which a stall between an edge and
+ * its timestamp doesn't move.
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -25,8 +28,8 @@
 #include <string.h>
 #include <time.h>
 
-#define MAXP 4096	/* periods kept for the medians */
-static float per_s[MAXP], per_high[MAXP];
+#define MAXP 4096	/* periods kept */
+static float per_s[MAXP], per_high[MAXP], sorted[MAXP];
 
 static int cmp_float(const void *a, const void *b)
 {
@@ -35,10 +38,11 @@ static int cmp_float(const void *a, const void *b)
 	return x < y ? -1 : x > y;
 }
 
-static double median(float *v, unsigned n)
+static double median(const float *v, unsigned n)
 {
-	qsort(v, n, sizeof(*v), cmp_float);
-	return n % 2 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2.0;
+	memcpy(sorted, v, n * sizeof(*v));
+	qsort(sorted, n, sizeof(*v), cmp_float);
+	return n % 2 ? sorted[n / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0;
 }
 
 #define REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
@@ -99,12 +103,12 @@ int main(int argc, char **argv)
 						t = now();
 						if (!first) {
 							first = t;
-						} else if (np < MAXP && hi >= 0) {
+						} else if (np < MAXP && hi >= 0 && t > last) {
 							/* the period that ended here; its edges
 							 * timed alike, so the delay to see one
 							 * cancels out */
 							per_s[np] = t - last;
-							per_high[np] = hi / (t - last);
+							per_high[np] = hi;
 							np++;
 						}
 						last = t;
@@ -122,8 +126,18 @@ int main(int argc, char **argv)
 		double duty = samples ? 100.0 * high / samples : 0.0;
 
 		if (np >= 3) {
-			hz = 1.0 / median(per_s, np);
-			duty = 100.0 * median(per_high, np);
+			double m = median(per_s, np), sp = 0;
+			double tol = m * 0.02 > 2e-6 ? m * 0.02 : 2e-6;
+			unsigned kept = 0;
+
+			for (unsigned i = 0; i < np; i++) {
+				if (per_s[i] < m - tol || per_s[i] > m + tol)
+					continue;
+				sp += per_s[i];
+				per_high[kept++] = per_high[i] / per_s[i];	/* now a fraction */
+			}
+			hz = kept / sp;
+			duty = 100.0 * median(per_high, kept);
 		}
 
 		printf("GP%u: rises=%lu falls=%lu hz=%.1f duty=%.1f samples=%lu\n", n, rises, falls,

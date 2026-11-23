@@ -159,9 +159,10 @@ class Tester:
 class Linux:
     def __init__(self, host):
         self.host = host
-        # accept-new: a reflashed board may have made a new host key
-        self.ssh = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10",
-                    f"root@{host}"]
+        # a test board on the bench: its host key changes whenever /home
+        # (where dropbear keeps it) is new, so no known_hosts check
+        self.ssh = ["ssh", "-o", "BatchMode=yes", "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no",
+                    "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10", f"root@{host}"]
 
     def run(self, cmd, timeout=120, stdin=None):
         r = subprocess.run(self.ssh + [cmd], input=stdin, capture_output=True, text=True, timeout=timeout)

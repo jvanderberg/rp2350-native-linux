@@ -99,8 +99,11 @@ class Pin:
         self._l = _lines.get(self._n)
         if self._l is None:
             self._l = _lines[self._n] = _Line(self._n)
-        elif mode == -1 and pull == -1 and value is None:
-            return  # Pin(n) of a pin in use: that pin as it is
+        if mode == -1 and pull == -1 and value is None:
+            # Pin(n): the pin as it is (as on the rp2 port), the line
+            # requested when it is first used. So PWM(Pin(n)) doesn't take
+            # the line, which a running PWM channel holds.
+            return
         # as on the rp2 port: a mode without a pull means no pull
         if mode != -1 and pull == -1:
             pull = None
@@ -156,8 +159,14 @@ class Pin:
             fcntl.ioctl(l.req, _SET_CONFIG, c)
         return self
 
+    def _req(self):
+        if self._l.req is None:
+            self.init()
+        return self._l.req
+
     def value(self, v=None):
         l = self._l
+        self._req()
         b = bytearray(16)
         if v is None:
             struct.pack_into("<QQ", b, 0, 0, 1)
@@ -195,7 +204,7 @@ class Pin:
         """Block until the next edge irq() asked for; Pin.IRQ_RISING or
         Pin.IRQ_FALLING."""
         l = self._l
-        ev = l.req.read(_EVENT)
+        ev = self._req().read(_EVENT)
         l.last_edge = Pin.IRQ_RISING if struct.unpack_from("<I", ev, 8)[0] == 1 else Pin.IRQ_FALLING
         return l.last_edge
 
