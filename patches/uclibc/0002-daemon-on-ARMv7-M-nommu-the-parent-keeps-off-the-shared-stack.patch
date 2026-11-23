@@ -11,17 +11,19 @@ xPSR value (gpioset -z died with a bus error at 0x21000000 about one time
 in eight). Also, in Thumb INTERNAL_SYSCALL keeps r7 and the syscall
 number on the stack around each svc.
 
-On M-profile ARM (ARMv7-M, ARMv8-M) the parent now does the clone and its exit on a small stack of
-its own, in registers only; the child gets the old sp back as clone's new
-stack.
+On M-profile ARM with Thumb-2 (ARMv7-M, ARMv8-M Mainline) the parent
+now does the clone and its exit on a small stack of its own, in
+registers only; the child gets the old sp back as clone's new stack. A failed clone now returns -1 with errno set, which is what
+daemon() tests for (it returned -errno, which daemon() took for the
+child).
 ---
 --- a/libc/unistd/daemon.c	2026-08-08 11:20:19.000000000 +0000
-+++ b/libc/unistd/daemon.c	2026-11-23 17:24:50.782737864 +0000
-@@ -63,6 +63,47 @@
++++ b/libc/unistd/daemon.c	2026-11-23 17:45:52.526066424 +0000
+@@ -63,6 +63,52 @@
  /* use clone() to get fork() like behavior here -- we just want to disassociate
   * from the controlling terminal
   */
-+#if defined __arm__ && __ARM_ARCH_PROFILE == 'M'
++#if defined __arm__ && __ARM_ARCH_PROFILE == 'M' && __ARM_ARCH_ISA_THUMB >= 2
 +#define __DAEMON_STR(x) #x
 +#define __DAEMON_XSTR(x) __DAEMON_STR(x)
 +/* The child goes on on the parent's stack, so the parent must not write
@@ -59,13 +61,18 @@ stack.
 +		: "+r" (r0), "+r" (r3)
 +		:
 +		: "r1", "r2", "ip", "cc", "memory");
++	if (r0 < 0) {
++		/* daemon() tests for -1 */
++		__set_errno(-r0);
++		return -1;
++	}
 +	return r0;
 +}
 +#else
  static inline pid_t _fork_parent(void)
  {
  	INTERNAL_SYSCALL_DECL(err);
-@@ -72,6 +113,7 @@
+@@ -72,6 +118,7 @@
  		INTERNAL_SYSCALL(exit, err, 1, 0);
  	return ret;
  }
