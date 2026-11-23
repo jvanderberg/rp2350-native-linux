@@ -29,6 +29,11 @@ write's first byte sets the register pointer and the rest are stored from
 there, and a read returns bytes from the pointer. Opening the port at 1200
 baud and closing it also reboots into BOOTSEL.
 
+A board running debugprobe ignores `picotool reboot -f -u` and the
+1200-baud reboot, so put it in BOOTSEL by hand the first time (hold
+BOOTSEL while plugging it in). Once it runs the tester, its `bootsel`
+command does it.
+
 ```sh
 cd tools/pintester && cargo build --release
 picotool load --ser SERIAL -v -x -t elf target/riscv32imac-unknown-none-elf/release/pintester

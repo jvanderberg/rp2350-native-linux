@@ -159,7 +159,9 @@ class Tester:
 class Linux:
     def __init__(self, host):
         self.host = host
-        self.ssh = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", f"root@{host}"]
+        # accept-new: a reflashed board may have made a new host key
+        self.ssh = ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new", "-o", "ConnectTimeout=10",
+                    f"root@{host}"]
 
     def run(self, cmd, timeout=120, stdin=None):
         r = subprocess.run(self.ssh + [cmd], input=stdin, capture_output=True, text=True, timeout=timeout)
@@ -297,7 +299,7 @@ def t_mpy(t, b):
 
 def t_pio(t, b):
     d = "/tmp/pin-test-pio"
-    rc, out = b.run(f"rm -rf {d}; mkdir {d} && cd {d} && cp /usr/share/examples/pio/* . && "
+    rc, out = b.run(f"rm -rf {d}; mkdir {d} && cd {d} && cp /usr/share/examples/pio/*.[cp]* . && "
                     "for p in squarewave pio-fifo pio-dma pio-edges; do cc -o $p $p.c -lpio || exit 1; done && "
                     "pioasm ws2812.pio ws2812.pio.h && cc -o ws2812 ws2812.c -lpio", timeout=300)
     check("PIO examples build (tcc, pioasm)", rc == 0, out)
