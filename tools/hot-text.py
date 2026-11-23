@@ -105,6 +105,9 @@ def main():
     for a, size, name in funcs:
         name_size[name] += size
     asm_of = {s: o for o, syms in ASM.items() for s in syms}
+    asm_size = collections.Counter()
+    for a, size in {(f[0], f[1]) for f in funcs if f[2] in asm_of}:
+        asm_size[asm_of[[f[2] for f in funcs if f[0] == a and f[2] in asm_of][0]]] += size
 
     def unit(pc):
         """(key, pattern, size, kind) of the code at pc, or None"""
@@ -119,8 +122,7 @@ def main():
             return None
         if name in asm_of:
             o = asm_of[name]
-            osize = sum(f[1] for f in {(f[0], f[1]) for f in funcs if f[2] in ASM[o]})
-            return (o, o, osize, "asm")
+            return (o, o, asm_size[o], "asm")
         return (name, name, name_size[name], "c")
 
     score = collections.Counter()

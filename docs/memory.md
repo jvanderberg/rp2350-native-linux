@@ -18,8 +18,8 @@ cache, tmpfs, FDPIC programs' data, and the ATRANS pool.
 
 | Address | Contents |
 |---|---|
-| 0x20000000–0x20022FFF | The kernel's hot code (`.sram.text`, 140 KiB with its veneers), copied from flash at boot |
-| 0x20023000–0x20067FFF | `sram-text` (mtd0, 276 KiB) |
+| 0x20000000–0x2003BFFF | The kernel's hot code (`.sram.text`, 236 KiB with its veneers), copied from flash at boot |
+| 0x2003C000–0x20067FFF | `sram-text` (mtd0, 176 KiB) |
 | 0x20068000–0x2006BFFF | The I/O area shared with core 1 (`rp2350-io.h`): control blocks, the two network rings, the SD read slots, the flash page buffer and stack |
 | 0x2006C000–0x2007FFFF | The boot stub's RAM (80 KiB): its data, core 1's SRAM code, core 1's stack, core 0's stack before Linux |
 | 0x20080000–0x20081FFF | SRAM8/9: the console rings |
@@ -38,7 +38,7 @@ through the same 16 KiB XIP cache as all of PSRAM. At a tight shell loop the
 cache hits about 95% of the time, and the misses are about half of the run
 time. So what runs most goes where it doesn't miss:
 
-- **The kernel's hot code in SRAM.** The 128 KiB of kernel code that runs
+- **The kernel's hot code in SRAM.** The 224 KiB of kernel code that runs
   most (`CONFIG_RP2350_HOT_TEXT`): pipes, the scheduler, the exception
   entry, `memcpy`. A pipe round trip takes a third of the time it takes
   with the kernel all in flash ([performance.md](performance.md)).
@@ -48,7 +48,7 @@ time. So what runs most goes where it doesn't miss:
   `/sram` and binds `/sram/busybox` over `/bin/busybox`. romfs on a RAM MTD
   supports direct mapping on nommu, so ELF-FDPIC maps busybox's text in
   place from SRAM, shared by every process. With the kernel's code there,
-  the 276 KiB left is too small for busybox (388 KiB), so it runs in place
+  the 176 KiB left is too small for busybox (388 KiB), so it runs in place
   from the xip romfs instead: it is only PID 1, `getty`, `telnetd` and
   `udhcpc` now, the shell being `busybox-atrans`.
 - **Libraries in place from flash.** `mkxiprom.py` builds a romfs of the

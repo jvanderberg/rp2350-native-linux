@@ -46,25 +46,29 @@ Pipes, fork and exec, ttys, the network and the SD card spend most of their
 time in the kernel, and the kernel runs from flash: with all of it there, a
 pipe round trip between FDPIC processes is 93% kernel time, spread over
 hundreds of functions, most of it waiting on flash. `CONFIG_RP2350_HOT_TEXT`
-builds the kernel with `-ffunction-sections` and links its hottest 128 KiB
+builds the kernel with `-ffunction-sections` and links its hottest 224 KiB
 into SRAM at 0x20000000: C functions one by one, and whole the exception
 entry code, `.sched.text`, `.noinstr.text`, `memcpy` and `memset`. The
-next 48 KiB goes first in flash `.text`, side by side. 128 KiB covers 93% of
-the kernel's samples in the 13 workloads profiled.
+next 48 KiB goes first in flash `.text`, side by side. 224 KiB covers 98.5%
+of the kernel's samples in the 13 workloads profiled (128 KiB covers 93%).
 
 With the flash at 116 MHz, the same root filesystem, three runs each:
 
-| Kernel code in SRAM | none | 20 KiB | 64 KiB | 128 KiB |
-|---|---|---|---|---|
-| Pipe round trip, FDPIC | 443–492 µs | 116–165 µs | 108–128 µs | 96–109 µs |
-| Pipe round trip, ATRANS | 1034–1056 µs | 494–495 µs | 364–369 µs | 353–355 µs |
-| 30 × `echo x \| cat` | 0.58–0.60 s | 0.50 s | 0.43–0.44 s | 0.41–0.42 s |
-| 2000-iteration `ash` loop | 0.82 s | 0.80–0.81 s | 0.78–0.79 s | 0.77–0.78 s |
+| Kernel code in SRAM | none | 20 KiB | 64 KiB | 128 KiB | 224 KiB |
+|---|---|---|---|---|---|
+| Pipe round trip, FDPIC | 443–492 µs | 116–165 µs | 108–128 µs | 96–113 µs | 104–119 µs |
+| Pipe round trip, ATRANS | 1034–1056 µs | 494–495 µs | 364–369 µs | 353–358 µs | 357–360 µs |
+| 30 × `echo x \| cat` | 0.58–0.60 s | 0.50 s | 0.43–0.44 s | 0.41 s | 0.36–0.37 s |
+| 2000-iteration `ash` loop | 0.82 s | 0.80–0.81 s | 0.78–0.79 s | 0.77–0.79 s | 0.77–0.78 s |
+| `seq 20000` over telnet | 11 KB/s | 20 KB/s | | 50–59 KB/s | 62 KB/s |
+| 1.5 MB sent through ssh | 3.7 s | | | 3.1–3.3 s | 2.9–3.0 s |
+| 8 MiB read from the SD card | 3.1 s | | | 2.7–2.9 s | 2.6 s |
 
-With 128 KiB against none, 1.5 MB through ssh takes 3.1 s instead of 3.7 s to
-send and 4.5–5.3 s instead of 5.3–5.7 s to receive, and 8 MiB read from the
-SD card 2.7 s instead of 3.1 s. The `ash` loop is user code, which runs from
-PSRAM.
+Past what the pipe benchmarks use, the extra code is the tty, the network,
+the block layer and exec. The `ash` loop is user code, which runs from
+PSRAM. Whether the FDPIC busybox runs from SRAM or flash makes no
+difference to telnet (20 KB/s either way, with 20 KiB of kernel code in
+SRAM): `telnetd` and `login` are not where the time goes.
 
 How it is put together:
 
@@ -92,7 +96,7 @@ WORKLOAD
 echo 0 > /proc/pcsample; cat /proc/pcsample > NAME.bin
 ```
 
-and run `tools/hot-text.py vmlinux System.map linux/mach-rp2350 128 48
+and run `tools/hot-text.py vmlinux System.map linux/mach-rp2350 224 48
 *.bin` with that kernel's `vmlinux` and `System.map`. Every workload weighs
 the same. A function that is renamed or gone just stops matching.
 
