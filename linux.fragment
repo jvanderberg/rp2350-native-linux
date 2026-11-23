@@ -40,6 +40,9 @@ CONFIG_UNIX98_PTYS=y
 CONFIG_DEVTMPFS=y
 CONFIG_DEVTMPFS_MOUNT=y
 CONFIG_PROC_FS=y
+# /proc/vmstat event counts (pswpin/pswpout for ATRANS swap, oom_kill,
+# pgpgin/pgpgout, allocstall): tinyconfig leaves them out
+CONFIG_VM_EVENT_COUNTERS=y
 CONFIG_SYSFS=y
 CONFIG_TMPFS=y
 CONFIG_RP2350_TIMER=y

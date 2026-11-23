@@ -33,10 +33,17 @@ unsigned long rp2350_atrans_task_size_max(void);
 unsigned long rp2350_atrans_stkerr_frame(void);
 unsigned long rp2350_atrans_str_max(unsigned long addr);
 void *rp2350_alloc_exact(size_t size);		/* mm/nommu.c: do_mmap_private */
+/* memory reporting: mm/show_mem.c, fs/proc/rp2350-task.inc, /proc/meminfo */
+unsigned long rp2350_atrans_free_pages(void);	/* free space in the ATRANS pool */
+void rp2350_atrans_statm(struct mm_struct *mm, unsigned long *text, unsigned long *data);
+void arch_report_meminfo(struct seq_file *m);
 #endif
 
 #ifdef CONFIG_RP2350_ATRANS_SWAP
+struct sysinfo;
+
 void rp2350_atrans_swap_resume(void);	/* end of schedule(): swap current back in */
+void rp2350_atrans_si_swapinfo(struct sysinfo *val);	/* si_swapinfo (linux/swap.h) */
 #endif
 
 #endif

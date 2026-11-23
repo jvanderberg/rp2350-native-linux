@@ -303,6 +303,10 @@ in use: about 5 ms for a small process, and about 60 ms with 1 MiB of heap.
   block is loaded, and through the uncached alias if not. So
   `/proc/<pid>/cmdline`, `environ` and `mem` work, and `ps` shows real
   command lines and VSZ (data plus text).
+- **RSS:** the block counts as anonymous memory, the shared text as file
+  memory, and what swap holds as swap, in the kernel's RSS counters, so
+  `/proc/<pid>/stat`, `statm` and `status`, `getrusage()` and the OOM killer
+  see them ([memory.md](memory.md#what-free-top-and-ps-report)).
 - **`/proc/<pid>/maps`** shows the stack, the image (with its path), the
   heap, the mapped runs, the block, and for v3 the text window and its text
   block with its number of users:
@@ -334,9 +338,12 @@ in use: about 5 ms for a small process, and about 60 ms with 1 MiB of heap.
 | `kernel/traps.c` | `set_tls` updates the thread pointer word |
 | `kernel/process.c` | `copy_thread` refuses a clone stack outside the block |
 | `kernel/fork.c` | nommu `sys_fork` for ATRANS processes; nommu `dup_mmap` calls the driver |
-| `mm/nommu.c` | `brk`, `do_mmap`, `do_munmap`, `exit_mmap`, `__access_remote_vm` go to the driver |
+| `mm/nommu.c` | `brk`, `do_mmap`, `do_munmap`, `exit_mmap`, `__access_remote_vm` go to the driver; RSS counters for FDPIC mappings |
 | `kernel/futex/core.c` | private futex keys include the mm for ATRANS processes |
-| `fs/proc/task_nommu.c` | `/proc/<pid>/maps` and VSZ for ATRANS processes |
+| `fs/proc/task_nommu.c` | `/proc/<pid>/maps` and VSZ for ATRANS processes; `status` and `statm` from the RSS counters (`rp2350-task.inc`) |
+| `mm/show_mem.c` | the pool's free space in `MemFree`, `MemAvailable` and `sysinfo()` |
+| `include/linux/swap.h` | `si_swapinfo` reports ATRANS swap |
+| `mm/oom_kill.c` | badness leaves out swap (and the OOM changes in [memory.md](memory.md)) |
 | `kernel/sched/core.c` | the swap-in hook ([atrans-swap.md](atrans-swap.md)) |
 
 `CONFIG_COMPAT_32BIT_TIME=y` is set because musl calls the 32-bit-time
@@ -349,8 +356,6 @@ the value fits in 32 bits, and the `*_time64` ones only otherwise.
   contiguous block. The whole stack region is resident in every process.
 - **No `mprotect`, no writable `MAP_SHARED`, no `dlopen`.** `prot` is not
   enforced inside the block.
-- **The OOM killer can't weigh ATRANS processes:** nommu keeps no RSS
-  counters, so per-process RSS reads 0.
 - **ptrace and DMA into user buffers** are not supported. DMA through the
   window would follow whichever process is current.
 - **One CPU.** Core 1 runs the I/O. SMP would need one window per core,

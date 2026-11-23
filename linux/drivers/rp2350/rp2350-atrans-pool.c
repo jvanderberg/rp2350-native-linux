@@ -227,9 +227,18 @@ static unsigned long pool_lend_locked(unsigned long pages)
 	return rel >> PAGE_SHIFT;
 }
 
+/* Read without pool_mutex (/proc/meminfo, sysinfo): every update keeps
+ * pool_used within the pool, and a stale value is only a moment old. */
 unsigned long atrans_pool_free_bytes(void)
 {
-	return pool_end - pool_base - pool_used;
+	unsigned long size = READ_ONCE(pool_end) - pool_base, used = READ_ONCE(pool_used);
+
+	return size > used ? size - used : 0;
+}
+
+unsigned long atrans_pool_size(void)
+{
+	return READ_ONCE(pool_end) - pool_base;
 }
 
 /* rp2350_alloc_exact(): FDPIC memory found no run */

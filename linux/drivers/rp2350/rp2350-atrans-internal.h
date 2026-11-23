@@ -102,6 +102,7 @@ void ensure_loaded(struct mm_struct *mm);
 unsigned long block_alloc(unsigned long size);	/* may sleep; 0: ENOMEM */
 void block_free(unsigned long kva, unsigned long size);
 void set_block(struct mm_struct *mm, unsigned long kva, unsigned long size);
+void atrans_rss_set(struct mm_struct *mm, int member, unsigned long pages);	/* MM_* counter */
 unsigned long used_top(struct mm_struct *mm);	/* brk or the highest mapped page */
 void atrans_for_each_used(struct mm_struct *mm, unsigned long sp,
 			  void (*fn)(unsigned long off, unsigned long len, void *arg), void *arg);
@@ -111,6 +112,7 @@ unsigned long block_alloc_run(unsigned long size);	/* page allocator run, 0: non
 unsigned long atrans_run_take_at(unsigned long kva, unsigned long max);	/* bytes taken */
 unsigned long atrans_pool_lend(unsigned long pages);	/* pages given to the page allocator */
 unsigned long atrans_pool_free_bytes(void);		/* free space in the pool */
+unsigned long atrans_pool_size(void);			/* bytes, 0: no pool */
 bool atrans_may_move(struct mm_struct *mm, struct atrans_text *t);
 bool atrans_block_move(struct mm_struct *mm, struct atrans_text *t, unsigned long src,
 		       unsigned long dst, unsigned long size);	/* false: can't now */

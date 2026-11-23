@@ -776,12 +776,32 @@ void block_free(unsigned long kva, unsigned long size)
 	st.live_bytes -= size;
 }
 
+/*
+ * The mm's RSS counters, which /proc/<pid>/stat, statm and status,
+ * getrusage() and the OOM killer read: the block is anonymous memory
+ * (MM_ANONPAGES), the shared text file memory (MM_FILEPAGES, counted in
+ * every process sharing it, as file pages are with an MMU), and what swap
+ * holds of the process MM_SWAPENTS (rp2350-atrans-swap.c). The high-water
+ * mark is kept before any of them drops, as the MMU code does.
+ */
+void atrans_rss_set(struct mm_struct *mm, int member, unsigned long pages)
+{
+	long d = (long)pages - (long)get_mm_counter(mm, member);
+
+	if (!d)
+		return;
+	if (d < 0 && member != MM_SWAPENTS)
+		update_hiwater_rss(mm);
+	percpu_counter_add(&mm->rss_stat[member], d);	/* (add_mm_counter traces: MMU only) */
+}
+
 void set_block(struct mm_struct *mm, unsigned long kva, unsigned long size)
 {
-	/* (nommu keeps no RSS counters, so the OOM killer can't weigh this) */
 	mm->context.atrans_kva = kva;
 	mm->context.atrans_size = size;
-	mm->total_vm = size >> PAGE_SHIFT;
+	mm->total_vm = size >> PAGE_SHIFT;	/* swap-out sets the size it had */
+	atrans_rss_set(mm, MM_ANONPAGES, size >> PAGE_SHIFT);
+	atrans_rss_set(mm, MM_FILEPAGES, mm_tsize(mm) >> PAGE_SHIFT);
 	if (kva && atrans_pool_has(kva))
 		atrans_pool_own(kva, mm, NULL);		/* movable from now on */
 }
@@ -1468,6 +1488,11 @@ void rp2350_atrans_exit(struct mm_struct *mm)
 		if (a->text)
 			text_put(a->text);
 		rp2350_atrans_dev_exit(a);
+		/* the text's and swap's counts too (an FDPIC mm's are its
+		 * mappings', which exit_mmap takes off as it unmaps them) */
+		atrans_rss_set(mm, MM_ANONPAGES, 0);
+		atrans_rss_set(mm, MM_FILEPAGES, 0);
+		atrans_rss_set(mm, MM_SWAPENTS, 0);
 		st.exits++;
 	}
 	kfree(a);
@@ -1565,9 +1590,34 @@ int rp2350_atrans_show_maps(struct seq_file *m, struct mm_struct *mm)
 	return 0;
 }
 
+/* data plus text; a swapped-out process keeps the size its block had */
 unsigned long rp2350_atrans_vsize(struct mm_struct *mm)
 {
-	return mm->context.atrans_size + mm_tsize(mm);
+	return (mm->total_vm << PAGE_SHIFT) + mm_tsize(mm);
+}
+
+/* /proc/<pid>/statm and status (fs/proc/rp2350-task.inc): text and data in
+ * pages, the data the block's size, resident or swapped out */
+void rp2350_atrans_statm(struct mm_struct *mm, unsigned long *text, unsigned long *data)
+{
+	*text = mm_tsize(mm) >> PAGE_SHIFT;
+	*data = mm->total_vm;
+}
+
+/* si_meminfo(), si_mem_available() (mm/show_mem.c): the pool's free space
+ * is free memory, though the page allocator doesn't count it */
+unsigned long rp2350_atrans_free_pages(void)
+{
+	return atrans_pool_free_bytes() >> PAGE_SHIFT;
+}
+
+/* the end of /proc/meminfo */
+void arch_report_meminfo(struct seq_file *m)
+{
+	seq_printf(m, "ATransPool:     %8lu kB\n", atrans_pool_size() >> 10);
+	seq_printf(m, "ATransPoolFree: %8lu kB\n", atrans_pool_free_bytes() >> 10);
+	seq_printf(m, "ATransBlocks:   %8lu kB\n", READ_ONCE(st.live_bytes) >> 10);
+	seq_printf(m, "ATransText:     %8lu kB\n", READ_ONCE(st.text_bytes) >> 10);
 }
 
 /* ---- loader: static ELF linked in the window --------------------------------- */

@@ -144,6 +144,12 @@ already running:
   even when the daemon's own allocation is the one that failed (stock
   exempts only -1000). -999 is reset to 0 at exec, so what those daemons
   start doesn't inherit it (`mm/oom_kill.c`, `fs/exec.c`, patched).
+- When it has to choose (the allocating task is one of those daemons, or a
+  kernel thread), it takes the process with the most resident memory, as
+  with an MMU: its RSS ([below](#what-free-top-and-ps-report)) plus
+  `oom_score_adj`. Swap isn't counted, unlike stock: killing a process that
+  is swapped out frees no RAM (`mm/oom_kill.c`, patched).
+  `/proc/<pid>/oom_score` shows the ranking.
 
 ## Bounded tmpfs
 
@@ -180,6 +186,45 @@ Unreclaimable slab comes to about 1.2 MB.
 `linux/mm/rp2350-memstat.inc`) show slab by cache, large kmallocs by
 caller and page kinds, and one character per page of RAM.
 
+## What free, top and ps report
+
+The kernel's own figures count the ATRANS pool and swap, so `free`, `top`,
+`htop`, `ps` and `pulse` show the truth unchanged.
+
+- **Free memory.** The pool is taken from the page allocator, so its free
+  space would count as used. `MemFree` in `/proc/meminfo` and `freeram` from
+  `sysinfo()` are the free pages plus the pool's free space, and
+  `MemAvailable` adds the pool's free space too (`mm/show_mem.c`, patched).
+  Used memory (`MemTotal` minus `MemFree`, `Buffers` and `Cached`) is then
+  the kernel, FDPIC programs and ATRANS blocks, each shared text once.
+- **Swap.** `SwapTotal` and `SwapFree` (`sysinfo()`'s `totalswap` and
+  `freeswap`) are ATRANS swap ([atrans-swap.md](atrans-swap.md)), through
+  `si_swapinfo` (`include/linux/swap.h`, patched; `total_swap_pages` stays
+  0, so reclaim never tries to swap LRU pages). `/proc/swaps` lists the
+  device or file, and `/proc/vmstat`'s `pswpout` and `pswpin` count the pages
+  written and read (`CONFIG_VM_EVENT_COUNTERS`).
+- **The pool**, at the end of `/proc/meminfo`: `ATransPool` (its size now:
+  it lends and grows back), `ATransPoolFree`, `ATransBlocks` (every ATRANS
+  block, data and text, in the pool or not) and `ATransText` (the shared
+  text blocks).
+- **Per process.** Stock nommu keeps no RSS counters; here they are kept,
+  and `/proc/<pid>/stat` (VSZ, RSS), `statm`, `status`
+  (`VmSize`, `VmHWM`, `VmRSS`, `RssAnon`, `RssFile`, `VmData`, `VmExe`,
+  `VmSwap`, in the MMU kernel's format: `fs/proc/rp2350-task.inc`),
+  `getrusage()`'s `ru_maxrss` and the OOM killer read them:
+  - **An ATRANS process:** its block is `RssAnon`, its shared text
+    `RssFile`, and what swap holds of it `VmSwap` (`set_block()` in
+    `rp2350-atrans.c`, and the swap code). Swapped out, it has `RssAnon` 0,
+    so its RSS is its text, which stays resident; its VSZ is still its
+    block's size plus its text.
+  - **An FDPIC process:** each of its mappings whose pages are RAM, while it
+    is mapped: a private writable one as `RssAnon`, a read-only or shared
+    file mapping as `RssFile` (`mm/nommu.c`, patched). Text run in place
+    from flash or SRAM (busybox, uClibc) costs no RAM and doesn't count.
+  - Shared text is in the RSS of every process that shares it, as file
+    pages are with an MMU, so adding up RSS counts it more than once; the
+    totals above count it once.
+
 ## Kernel configuration notes
 
 - `physmap` rounds each window down to a power of two, which suits
@@ -190,8 +235,10 @@ caller and page kinds, and one character per page of RAM.
 
 ## Limitations
 
-- `/proc/meminfo` doesn't count the ATRANS pool or swap, and per-process
-  RSS reads 0. `/proc/atrans` and `/proc/atrans-swap` have those figures.
+- `AnonPages`, `Mapped` and `Committed_AS` in `/proc/meminfo` read 0:
+  nommu maps no pages through page tables and does no overcommit
+  accounting, which is what keeps them. `ATransBlocks` and `MmapCopy` have
+  the user memory.
 - An ATRANS process has at most 4 MiB of data, in one contiguous block.
 - FDPIC memory and kernel memory fragment the RAM outside the pool, and
   nothing can move them.

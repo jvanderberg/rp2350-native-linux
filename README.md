@@ -234,9 +234,6 @@ On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
   both the kernel and the process refill their working sets: a pipe round
   trip takes about 1.3 ms, against 0.44 ms between FDPIC processes, which
   don't switch windows ([docs/performance.md](docs/performance.md)).
-- **Memory accounting:** `/proc/meminfo` doesn't count the ATRANS pool or
-  swap, and per-process RSS reads 0. `/proc/atrans` and `/proc/atrans-swap`
-  have those figures.
 - **Slow early boot:** `overlay-init` spends about 8 s in its xip romfs
   step (`dmesg | grep overlay-init:` shows each step), so ssh comes up about
   25 s after power-on.
