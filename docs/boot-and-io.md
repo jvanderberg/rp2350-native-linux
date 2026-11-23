@@ -156,24 +156,35 @@ read slot, core 1 still answers the park request.
 The kernel mounts the squashfs (`root=/dev/mtdblock1`) and runs
 `/sbin/overlay-init`, a script for the FDPIC busybox's hush, which:
 
-1. Puts a 1 MiB tmpfs overlay on top of it, so the system is writable until
-   reboot.
-2. Mounts the xip romfs at `/xip`, checks that its stamp matches the root
+1. Mounts the xip romfs at `/xip`, checks that its stamp matches the root
    filesystem's `/etc/xiprom.stamp`, and binds each file listed in
-   `/etc/xiprom.list` over its path. With a stale or missing romfs the
-   files in the squashfs are used.
+   `/etc/xiprom.list` over its path on the squashfs. With a stale or
+   missing romfs the files in the squashfs are used.
+2. Puts a 1 MiB tmpfs overlay on top of the squashfs, so the system is
+   writable until reboot, and binds the romfs files there too.
 3. Copies busybox into `sram-text` (`sramload`), mounts it at `/sram` and
    binds it over `/bin/busybox`, if it fits ([memory.md](memory.md)).
 4. Mounts `/home`, but only if the flash region already holds jffs2 (it
    looks for a node's magic). It never formats or erases it; without jffs2,
    `/home` is in RAM.
 5. Binds `/home/root` over `/root`.
-6. Pivots into the overlay and starts busybox init. The squashfs stays
-   visible at `/rom`.
+6. Pivots into the overlay and starts busybox init. The squashfs, with the
+   romfs files bound over it, stays visible at `/rom`.
+
+What makes a boot slow is loading text out of the squashfs: an exec of a
+program there copies (and decompresses) its text, and exec drops it from
+the page cache again. So `overlay-init` runs its commands with the FDPIC
+busybox rather than the applet links, which are `busybox-atrans` (470 KiB
+of text per exec, since nothing keeps it loaded yet), and with the
+romfs's busybox once it is mounted. Binding uClibc first on the squashfs
+root makes every later command run in place from flash. It has no
+`$(...)`, which hush on nommu runs in a shell re-executed from the
+squashfs. The whole script takes about 2 s.
 
 Each step writes a marker to the kernel log (`dmesg | grep overlay-init`),
-and so does each init script (`dmesg | grep rcS:`). Step 2, binding the
-romfs files, takes about 8 s: ssh is up about 25 s after power-on.
+and so does each init script (`dmesg | grep rcS:`). Init starts about
+3.4 s after the kernel, the last init script about 6.7 s, and ssh is up
+about 10 s after a reset.
 
 The kernel starts init without `PATH`, so `overlay-init` sets it.
 

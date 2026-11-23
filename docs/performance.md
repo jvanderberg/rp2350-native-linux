@@ -17,7 +17,8 @@ at 116 MHz and the SD card's bus at 43.5 MHz.
 | PSRAM read | 41 MB/s |
 | PSRAM write | 13 MB/s |
 | CRNG seeded (from the hardware TRNG) | 0.6 s after the kernel starts |
-| ssh reachable | about 25 s after power-on |
+| Init started | 3.4 s after the kernel |
+| ssh reachable | about 10 s after a reset |
 
 ## ATRANS processes
 
