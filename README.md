@@ -229,10 +229,10 @@ On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
 - **No MMU**, so no `mprotect`, no writable `MAP_SHARED` and no `dlopen`.
 - **4 MiB of data per process**, the size of the ATRANS window, in one
   contiguous block.
-- **Context switches are slow:** about 520 µs between two ATRANS
+- **Context switches cost:** about 180 µs between two ATRANS
   processes. A switch cleans and invalidates the 16 KiB XIP cache, and then
   both the kernel and the process refill their working sets: a pipe round
-  trip takes about 1.04 ms, against 0.46 ms between FDPIC processes, which
+  trip takes about 0.35 ms, against 0.10 ms between FDPIC processes, which
   don't switch windows ([docs/performance.md](docs/performance.md)).
 - **Slow early boot:** `overlay-init` spends about 8 s in its xip romfs
   step (`dmesg | grep overlay-init:` shows each step), so ssh comes up about
@@ -261,7 +261,7 @@ On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
 | `claude-remote/` | `claude-remote` and `claude-guest-mcp`, an MCP tool server built as an ATRANS program |
 | `tests/` | Kernel tests (`forktest`, `forktest3`, `swaptest`), the FDPIC switch baseline `pingpong`, `sramload`, `watchd`, and the ATRANS linker scripts |
 | `docker/` | The image the Buildroot builds run in (`rp2350-native-build`) |
-| `tools/` | `wifi.sh`, `preflight.sh` (sourced by the scripts), board session tools (`board-lock.sh`, `boot-wait.py`, `serial-chat.py`, `board-cmd.py`), and the two-board pin harness (`pin-test.py`, `pintester/`) |
+| `tools/` | `wifi.sh`, `preflight.sh` (sourced by the scripts), board session tools (`board-lock.sh`, `boot-wait.py`, `serial-chat.py`, `board-cmd.py`), `hot-text.py` (which kernel code goes in SRAM, from `/proc/pcsample` profiles), and the two-board pin harness (`pin-test.py`, `pintester/`) |
 | `docs/` | Design notes and measurements (below) |
 
 ## Documentation
