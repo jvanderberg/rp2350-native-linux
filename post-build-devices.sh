@@ -113,7 +113,8 @@ mtd() {
 # run their text in place from flash instead of a copy in RAM. Only if its
 # stamp matches the one built with this squashfs. Bound over the squashfs
 # root first, uClibc's two files first of all, so that the commands from
-# the second one on run entirely in place; then over the overlay below.
+# the third one on run entirely in place; then over the overlay below. The
+# romfs's busybox runs them only if the romfs has one (xiprom.list).
 mark "xip romfs"
 mtd xip; x=$m; xip=
 if [ -n "$x" ] && mount -t romfs -o ro "$x" /xip 2>/dev/null; then
@@ -121,7 +122,7 @@ if [ -n "$x" ] && mount -t romfs -o ro "$x" /xip 2>/dev/null; then
   read -r a < /xip/.stamp; read -r b < /etc/xiprom.stamp
   if [ -n "$a" ] && [ "$a" = "$b" ]; then
     xip=1
-    bb=/xip/bin/busybox
+    [ -x /xip/bin/busybox ] && bb=/xip/bin/busybox
     while read -r f; do mount --bind "/xip$f" "$f"; done < /etc/xiprom.list
   else
     umount /xip
