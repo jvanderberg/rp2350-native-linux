@@ -24,6 +24,8 @@ FILES="$FILES fs/iomap/buffered-io.c fs/squashfs/squashfs_fs.h"
 FILES="$FILES fs/ramfs/inode.c fs/ramfs/file-nommu.c fs/ramfs/internal.h include/linux/tty.h drivers/tty/tty_buffer.c include/linux/thread_info.h"
 # memory: the OOM killer's sysctls on nommu, protected daemons
 FILES="$FILES mm/oom_kill.c fs/exec.c"
+# memory reporting: free memory and swap with the ATRANS pool and swap
+FILES="$FILES mm/show_mem.c include/linux/swap.h"
 for f in $FILES; do
   if [ ! -f "$f.rp2350-orig" ]; then
     if grep -qi rp2350 "$f"; then
@@ -145,6 +147,54 @@ for f in mm/oom_kill.c:'oom_score_adj > OOM_SCORE_ADJ_MIN + 1) {' fs/exec.c:'-99
 done
 for f in include/linux/tty.h:'#define N_TTY_BUF_SIZE 1024' drivers/tty/tty_buffer.c:'(16 * 1024UL)' include/linux/thread_info.h:'__GFP_ZERO | __GFP_RETRY_MAYFAIL)'; do
   grep -qF "${f#*:}" "${f%%:*}$N" || { echo "apply.sh: patching ${f%%:*} failed" >&2; exit 1; }
+done
+
+# ---- memory reporting ----
+# What free, top, htop, ps and the OOM killer read, told the truth about
+# the ATRANS pool and swap. The pool is taken from the page allocator, so
+# its free space counts as used: add it to MemFree (and sysinfo's freeram)
+# and MemAvailable. ATRANS swap isn't CONFIG_SWAP: si_swapinfo reports it
+# (SwapTotal/SwapFree, sysinfo's totalswap/freeswap), while
+# total_swap_pages stays 0, so reclaim never tries to swap LRU pages.
+perl -0pi -e "$(cat <<'PERL'
+s~(#include "internal.h"\n)~#ifdef CONFIG_RP2350_ATRANS\n#include <asm/rp2350-atrans.h>\n#endif\n$1~;
+s~(\tavailable = global_zone_page_state\(NR_FREE_PAGES\) - totalreserve_pages;\n)~$1#ifdef CONFIG_RP2350_ATRANS\n\tavailable += rp2350_atrans_free_pages();\t/* rp2350: the ATRANS pool */\n#endif\n~;
+s~(\tval->freeram = global_zone_page_state\(NR_FREE_PAGES\);\n)~$1#ifdef CONFIG_RP2350_ATRANS\n\tval->freeram += rp2350_atrans_free_pages();\t/* rp2350: the ATRANS pool */\n#endif\n~;
+PERL
+)" mm/show_mem.c$N
+perl -0pi -e "$(cat <<'PERL'
+s~#define si_swapinfo\(val\) \\\n\tdo \{ \(val\)->freeswap = \(val\)->totalswap = 0; \} while \(0\)\n~#ifdef CONFIG_RP2350_ATRANS_SWAP\n#include <asm/rp2350-atrans.h>\n#define si_swapinfo(val) rp2350_atrans_si_swapinfo(val)\t/* rp2350: ATRANS swap */\n#else\n$&#endif\n~;
+PERL
+)" include/linux/swap.h$N
+# Per-process memory: nommu keeps no RSS counters, so RSS read 0 everywhere
+# (/proc/<pid>/stat, status, statm, getrusage) and the OOM killer couldn't
+# weigh a process. The ATRANS driver keeps an ATRANS process's (block,
+# shared text, swap: set_block in rp2350-atrans.c); nommu.c keeps an FDPIC
+# process's, per mapping, as it maps and unmaps; status and statm print
+# them as an MMU kernel does (fs/proc/rp2350-task.inc).
+perl -0pi -e "$(cat <<'PERL'
+s~(static void setup_vma_to_mm\(struct vm_area_struct \*vma, struct mm_struct \*mm\)\n)~#ifdef CONFIG_ARCH_RP2350\n/*\n * rp2350: RSS counters, which stock nommu does not keep. A mapping counts\n * while it is mapped, if its pages are RAM (text run in place from flash or\n * SRAM costs none): a private writable one as anonymous memory (the copy\n * belongs to the process), a read-only or shared file mapping as file\n * memory.\n */\nstatic void rp2350_vma_rss(struct vm_area_struct *vma, long pages)\n{\n\tif (!pages || !vma->vm_mm || !virt_addr_valid((void *)vma->vm_start))\n\t\treturn;\n\tif (pages < 0)\n\t\tupdate_hiwater_rss(vma->vm_mm);\n\tpercpu_counter_add(&vma->vm_mm->rss_stat[vma->vm_file && (!(vma->vm_flags & VM_WRITE) ||\n\t\t\t   (vma->vm_flags & VM_SHARED)) ? MM_FILEPAGES : MM_ANONPAGES], pages);\n}\n#else\nstatic inline void rp2350_vma_rss(struct vm_area_struct *vma, long pages)\n{\n}\n#endif\n\n$1~;
+s~(static void cleanup_vma_from_mm\(struct vm_area_struct \*vma\)\n\{\n)~$1\trp2350_vma_rss(vma, -(long)vma_pages(vma));\n~;
+s~(\tsetup_vma_to_mm\(vma, current->mm\);\n\tcurrent->mm->map_count\+\+;\n)~$1\trp2350_vma_rss(vma, vma_pages(vma));\n~;
+s~(\t\tvma->vm_start = to;\n\t\}\n)(\n\t/\* cut the backing region down to size \*/\n)~$1\trp2350_vma_rss(vma, -(long)((to - from) >> PAGE_SHIFT));\n$2~;
+s~(\t/\* all checks complete - do it \*/\n)(\tvma->vm_end = vma->vm_start \+ new_len;\n)~$1\trp2350_vma_rss(vma, (long)(new_len >> PAGE_SHIFT) - (long)(old_len >> PAGE_SHIFT));\n$2~;
+PERL
+)" mm/nommu.c$N
+cmp -s "$H/fs/proc/rp2350-task.inc" fs/proc/rp2350-task.inc || cp "$H/fs/proc/rp2350-task.inc" fs/proc/rp2350-task.inc
+perl -0pi -e "$(cat <<'PERL'
+s~(#include "internal.h"\n)~$1#ifdef CONFIG_ARCH_RP2350\n#include "rp2350-task.inc"\n#endif\n~;
+s~(\tunsigned long bytes = 0, sbytes = 0, slack = 0, size;\n)~$1\n#ifdef CONFIG_ARCH_RP2350\n\trp2350_task_mem(m, mm);\n\treturn;\n#endif\n~;
+s~(\tunsigned long size = kobjsize\(mm\);\n)~$1\n#ifdef CONFIG_ARCH_RP2350\n\treturn rp2350_task_statm(mm, shared, text, data, resident);\n#endif\n~;
+PERL
+)" fs/proc/task_nommu.c$N
+# The OOM killer's badness: RSS (now real), not swap. ATRANS swap holds
+# whole processes, and killing one that is swapped out frees no RAM.
+perl -0pi -e "$(cat <<'PERL'
+s~(\tpoints = get_mm_rss\(p->mm\) )\+ get_mm_counter\(p->mm, MM_SWAPENTS\) \+\n~#ifdef CONFIG_RP2350_ATRANS_SWAP\n\t/* rp2350: not swap: killing a swapped-out ATRANS process frees no RAM */\n$1+\n#else\n$&#endif\n~;
+PERL
+)" mm/oom_kill.c$N
+for f in mm/show_mem.c:'available += rp2350_atrans_free_pages();' mm/show_mem.c:'val->freeram += rp2350_atrans_free_pages();' mm/show_mem.c:'#include <asm/rp2350-atrans.h>' include/linux/swap.h:'#define si_swapinfo(val) rp2350_atrans_si_swapinfo(val)' mm/nommu.c:'static void rp2350_vma_rss(' mm/nommu.c:'rp2350_vma_rss(vma, -(long)vma_pages(vma));' mm/nommu.c:'rp2350_vma_rss(vma, vma_pages(vma));' mm/nommu.c:'rp2350_vma_rss(vma, -(long)((to - from)' mm/nommu.c:'rp2350_vma_rss(vma, (long)(new_len' fs/proc/task_nommu.c:'#include "rp2350-task.inc"' fs/proc/task_nommu.c:'rp2350_task_mem(m, mm);' fs/proc/task_nommu.c:'return rp2350_task_statm(' mm/oom_kill.c:'frees no RAM */'; do
+  grep -qF -e "${f#*:}" "${f%%:*}$N" || { echo "apply.sh: patching ${f%%:*} (${f#*:}) failed" >&2; exit 1; }
 done
 
 # ---- user-mode faults deliver signals (mach-rp2350/fault.c) ----

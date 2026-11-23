@@ -81,6 +81,7 @@
 #include <linux/seq_file.h>
 #include <linux/slab.h>
 #include <linux/swap.h>
+#include <linux/sysinfo.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 #include <linux/vmstat.h>
@@ -610,6 +611,8 @@ static int swap_out(struct mm_struct *mm)
 		s->state = SW_SWAPPED;
 		s->when = jiffies;
 		set_block(mm, 0, 0);
+		mm->total_vm = size >> PAGE_SHIFT;	/* its VSZ */
+		atrans_rss_set(mm, MM_SWAPENTS, s->pages);
 	}
 	spin_unlock_irq(&swap_spin);
 	if (cancelled) {
@@ -628,6 +631,7 @@ static int swap_out(struct mm_struct *mm)
 	}
 	sw_unload(kva);		/* swapped out: the window must not show the freed block */
 	block_free(kva, size);
+	count_vm_events(PSWPOUT, s->pages);
 	st.outs++;
 	st.out_pages += s->pages;
 	st.out_ns += dt;
@@ -908,6 +912,7 @@ static void swap_kill(struct mm_struct *mm, const char *why)
 	spin_lock_irqsave(&swap_spin, flags);
 	s->state = SW_DEAD;
 	spin_unlock_irqrestore(&swap_spin, flags);
+	atrans_rss_set(mm, MM_SWAPENTS, 0);
 	rcu_read_lock();
 	for_each_process_thread(g, t)
 		if (t->mm == mm)
@@ -952,6 +957,7 @@ static int swap_in(struct mm_struct *mm)
 	s->n = 0;
 	spin_lock_irqsave(&swap_spin, flags);
 	set_block(mm, kva, s->size);
+	atrans_rss_set(mm, MM_SWAPENTS, 0);
 	if (self)
 		a->swap = NULL;
 	else
@@ -960,6 +966,7 @@ static int swap_in(struct mm_struct *mm)
 	recent[recent_i].mm = mm;
 	recent[recent_i].t = jiffies;
 	recent_i = (recent_i + 1) % ARRAY_SIZE(recent);
+	count_vm_events(PSWPIN, s->pages);
 	st.ins++;
 	st.in_pages += s->pages;
 	st.in_ns += dt;
@@ -1660,9 +1667,52 @@ static const struct proc_ops swap_proc_ops = {
 	.proc_write = swap_write,
 };
 
+/* ---- what the rest of the kernel reports ------------------------------------------- */
+
+/*
+ * si_swapinfo() (include/linux/swap.h, patched by apply.sh): SwapTotal and
+ * SwapFree in /proc/meminfo, sysinfo()'s totalswap and freeswap. Without
+ * CONFIG_SWAP there is no other swap, and total_swap_pages stays 0, so
+ * reclaim never tries to swap LRU pages. Read without swap_lock, which is
+ * held across card I/O: the figures are a moment old at worst.
+ */
+void rp2350_atrans_si_swapinfo(struct sysinfo *val)
+{
+	unsigned long n = 0, used = 0;
+
+	if (READ_ONCE(sw.bdev)) {
+		n = READ_ONCE(sw.nslots);
+		used = min(READ_ONCE(sw.used), n);
+	}
+	val->totalswap = n;
+	val->freeswap = n - used;
+}
+
+/* /proc/swaps, as mm/swapfile.c prints it (it needs CONFIG_SWAP) */
+static int swaps_show(struct seq_file *m, void *v)
+{
+	unsigned long kb, used;
+	bool took;
+	int len;
+
+	seq_puts(m, "Filename\t\t\t\tType\t\tSize\t\tUsed\t\tPriority\n");
+	took = swap_get();
+	if (sw.bdev && sw.file) {
+		kb = sw.nslots << (PAGE_SHIFT - 10);
+		used = sw.used << (PAGE_SHIFT - 10);
+		len = seq_file_path(m, sw.file, " \t\n\\");
+		seq_printf(m, "%*s%s\t%lu\t%s%lu\t%s%d\n", len < 40 ? 40 - len : 1, " ",
+			   sw.runs ? "file\t" : "partition", kb, kb < 10000000 ? "\t" : "",
+			   used, used < 10000000 ? "\t" : "", -2);
+	}
+	swap_put(took);
+	return 0;
+}
+
 static int __init rp2350_atrans_swap_init(void)
 {
 	proc_create("atrans-swap", 0644, NULL, &swap_proc_ops);
+	proc_create_single("swaps", 0444, NULL, swaps_show);
 	return 0;
 }
 device_initcall(rp2350_atrans_swap_init);
