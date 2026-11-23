@@ -16,5 +16,6 @@
 /usr/lib/libi2c.so.0.1.1
 /usr/lib/libpio.so
 # busybox: overlay-init runs its own commands with this copy, then puts it
-# in SRAM on top of it; the copy here is what runs if that fails
+# in SRAM on top of it if it fits there; otherwise (with the kernel's hot
+# code in SRAM) this copy keeps running
 /bin/busybox

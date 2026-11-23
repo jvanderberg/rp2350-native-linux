@@ -183,8 +183,8 @@ squashfs. The whole script takes about 2 s.
 
 Each step writes a marker to the kernel log (`dmesg | grep overlay-init`),
 and so does each init script (`dmesg | grep rcS:`). Init starts about
-3.4 s after the kernel, the last init script about 6.7 s, and ssh is up
-about 10 s after a reset.
+2.6 s after the kernel, the last init script about 5 s, and ssh is up
+about 7 s after a reset.
 
 The kernel starts init without `PATH`, so `overlay-init` sets it.
 

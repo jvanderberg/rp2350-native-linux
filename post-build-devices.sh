@@ -49,7 +49,7 @@ mkdir -p "$T/overlay" "$T/rom" "$T/home" "$T/mnt/sd" "$T/xip" "$T/sram"
 # /bin/sh and every applet link go to busybox-atrans (the userland build's
 # busybox-atrans.sh: ash, with real fork), and login shells, telnet, SSH and
 # tmux sessions, sh -c and the init scripts all run as ATRANS. The FDPIC
-# busybox (its text in SRAM) keeps PID 1 (/sbin/overlay-init, init) and the
+# busybox (its text run in place) keeps PID 1 (/sbin/overlay-init, init) and the
 # small fixed daemons below. Real programs (less, clear from the userland
 # build) are left as they are.
 if [ -x "$T/usr/bin/busybox-atrans" ]; then
@@ -139,7 +139,8 @@ if [ -n "$xip" ]; then
 fi
 mark "overlay mounted"
 # busybox's text in SRAM (mtd "sram-text", tests/sramload.c), where every
-# exec from now on, init's included, runs it in place
+# exec from now on, init's included, runs it in place; if it doesn't fit
+# (with the kernel's hot code in SRAM), the romfs copy bound above runs
 mark "sram text"
 mtd sram-text; s=$m
 [ -n "$s" ] && sramload bin/busybox "/dev/$s" >/dev/null &&
