@@ -229,10 +229,10 @@ On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
 - **No MMU**, so no `mprotect`, no writable `MAP_SHARED` and no `dlopen`.
 - **4 MiB of data per process**, the size of the ATRANS window, in one
   contiguous block.
-- **Context switches are slow:** about 650 µs between two ATRANS
+- **Context switches are slow:** about 520 µs between two ATRANS
   processes. A switch cleans and invalidates the 16 KiB XIP cache, and then
   both the kernel and the process refill their working sets: a pipe round
-  trip takes about 1.3 ms, against 0.44 ms between FDPIC processes, which
+  trip takes about 1.04 ms, against 0.46 ms between FDPIC processes, which
   don't switch windows ([docs/performance.md](docs/performance.md)).
 - **Slow early boot:** `overlay-init` spends about 8 s in its xip romfs
   step (`dmesg | grep overlay-init:` shows each step), so ssh comes up about
