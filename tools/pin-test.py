@@ -181,6 +181,12 @@ class Linux:
 
 RESULTS = []
 
+# The tester samples a pin in a software loop at about 3.8 MHz, and its loop
+# does more work after a rising edge, so at 1 MHz (under 4 samples a period)
+# it reads a 50% duty as 45%. Its duty is only checked up to 100 kHz (38
+# samples a period); above that, the frequency alone.
+DUTY_MAX_HZ = 100000
+
 
 def check(name, ok, detail=""):
     RESULTS.append(ok)
@@ -242,7 +248,7 @@ def t_pwm(t, b):
         time.sleep(0.2)
         m = t.meas(12, 300)
         hz, pct = 1e9 / period, 100 * duty / period
-        ok = abs(m["hz"] - hz) <= hz * 0.01 and abs(m["duty"] - pct) <= 2
+        ok = abs(m["hz"] - hz) <= hz * 0.01 and (hz > DUTY_MAX_HZ or abs(m["duty"] - pct) <= 2)
         check(f"GP15 PWM {hz:.0f} Hz {pct:.0f}%", ok, f"{m['hz']:.1f} Hz {m['duty']:.1f}%")
     b.run("echo 0 > /sys/class/pwm/pwmchip0/pwm15/enable; echo 15 > /sys/class/pwm/pwmchip0/unexport")
     time.sleep(0.2)
@@ -313,7 +319,8 @@ def t_pio(t, b):
         time.sleep(0.3)
         m = t.meas(10, 300)
         p.communicate(timeout=30)
-        check(f"PIO square wave {hz} Hz on GP13", abs(m["hz"] - hz) <= hz * 0.01 and abs(m["duty"] - 50) <= 3,
+        check(f"PIO square wave {hz} Hz on GP13",
+              abs(m["hz"] - hz) <= hz * 0.01 and (hz > DUTY_MAX_HZ or abs(m["duty"] - 50) <= 3),
               f"{m['hz']:.1f} Hz {m['duty']:.1f}%")
     # ws2812: 10 LEDs of 24 bits, a rise per bit
     p = b.start(f"sh -c 'echo ready; sleep 1; {d}/ws2812 13 10 ff00ff'")
@@ -395,7 +402,7 @@ def main():
         check(f"tcc builds {name}", rc == 0, out)
     for name in (a.only.split(",") if a.only else TESTS):
         TESTS[name](t, b)
-    b.run("rm -f /tmp/pin-test-*")
+    b.run("rm -rf /tmp/pin-test-* /tmp/pio-tests")  # /tmp is 512 KiB
     print(f"{sum(RESULTS)} of {len(RESULTS)} passed")
     return 0 if all(RESULTS) else 1
 
