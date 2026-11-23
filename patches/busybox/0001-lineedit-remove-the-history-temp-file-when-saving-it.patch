@@ -1,0 +1,44 @@
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Subject: [PATCH] lineedit: remove the history temp file when saving it fails
+
+save_history() writes the trimmed history to <file>.<pid>.new and renames
+it over the history file. When the disk is full the write or the rename
+fails and the temp file stays, which fills the disk further: each later
+shell leaves another. A short write was also renamed over the history.
+Check the stream's error flag and fclose() too; when the write or the
+rename fails, unlink the temp file and keep the old history.
+---
+--- a/libbb/lineedit.c	2026-11-23 15:51:17.751053590 +0000
++++ b/libbb/lineedit.c	2026-11-23 15:51:17.761086204 +0000
+@@ -1604,9 +1604,13 @@
+ 			fp = xfdopen_for_write(fd);
+ 			for (i = 0; i < st_temp->cnt_history; i++)
+ 				fprintf(fp, "%s\n", st_temp->history[i]);
+-			fclose(fp);
+-			if (rename(new_name, st->hist_file) == 0)
++			/* a short write (a full disk) or a failed rename leaves
++			 * no temp file behind, and no truncated history */
++			i = ferror(fp);
++			if (fclose(fp) == 0 && !i && rename(new_name, st->hist_file) == 0)
+ 				st->cnt_history_in_file = st_temp->cnt_history;
++			else
++				unlink(new_name);
+ 		}
+ 		free(new_name);
+ 		free_line_input_t(st_temp);
+@@ -1656,9 +1660,13 @@
+ 			fp = xfdopen_for_write(fd);
+ 			for (i = 0; i < st_temp->cnt_history; i++)
+ 				fprintf(fp, "%s\n", st_temp->history[i]);
+-			fclose(fp);
+-			if (rename(new_name, state->hist_file) == 0)
++			/* a short write (a full disk) or a failed rename leaves
++			 * no temp file behind, and no truncated history */
++			i = ferror(fp);
++			if (fclose(fp) == 0 && !i && rename(new_name, state->hist_file) == 0)
+ 				state->cnt_history_in_file = st_temp->cnt_history;
++			else
++				unlink(new_name);
+ 		}
+ 		free(new_name);
+ 		free_line_input_t(st_temp);
