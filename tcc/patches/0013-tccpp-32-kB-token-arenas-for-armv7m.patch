@@ -1,0 +1,33 @@
+From 0820e3fbda5d0dead6ffa9f64519141825833e57 Mon Sep 17 00:00:00 2001
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Date: Sun, 22 Nov 2026 12:13:57 -0600
+Subject: [PATCH] tccpp: 32 kB token arenas for armv7m
+
+The TokenSym and TokenString arenas are allocated whole (256 kB each) and chained when full; on a nommu board with a few MB that is half a megabyte held by every compile. 32 kB chunks bring tcc -c hello.c from about 616 kB of heap to 356 kB.
+---
+ tccpp.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/tccpp.c b/tccpp.c
+index f34513f..c26ab24 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -135,8 +135,15 @@ ST_FUNC void expect(const char *msg)
+ #define TAL_DEBUG_PARAMS , const char *sfile, int sline
+ #endif
+ 
++#ifdef TCC_ARM_THUMB
++/* nommu boards with a few MB: the arenas are allocated whole, and more
++   are chained on when they fill up, so start small */
++#define TOKSYM_TAL_SIZE (32 * 1024)
++#define TOKSTR_TAL_SIZE (32 * 1024)
++#else
+ #define TOKSYM_TAL_SIZE (256 * 1024) /* allocator for TokenSym in table_ident */
+ #define TOKSTR_TAL_SIZE (256 * 1024) /* allocator for TokenString instances */
++#endif
+ 
+ typedef struct TinyAlloc {
+     uint8_t *p;
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,11 @@
+[build]
+# Native RP2350 Linux: an ATRANS program (atrans/run-build.sh passes the
+# same target explicitly)
+target = "thumbv7m-none-eabi"
+
+# Native RP2350 Linux (atrans/run-build.sh): an ATRANS program,
+# Thumb-2 for ARMv7-M, soft-float, linked in the per-process window.
+[target.thumbv7m-none-eabi]
+# link-arm.x sets the two segments (ATRANS v3); 4 KiB pages, not lld's
+# 64 KiB, so the file has no 64 KiB of padding
+rustflags = ["-C", "link-arg=-Tlink-arm.x", "-C", "link-arg=-zmax-page-size=4096", "-C", "relocation-model=static"]

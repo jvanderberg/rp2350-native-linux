@@ -1,0 +1,15 @@
+# build outputs
+/out/
+/src/
+target/
+*.log
+# tcc: the patched source tree and its download (tcc/apply-patches.sh)
+/tcc/tinycc/
+/tcc/build/
+# libpio's host tests
+/br-external/package/libpio/test/build/
+# junk
+.DS_Store
+*.swp
+*~
+__pycache__/

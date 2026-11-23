@@ -1,0 +1,5 @@
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"
+# boot/ (core 0 and 1), claude-remote/ (an ATRANS program), tools/pintester/
+targets = ["thumbv8m.main-none-eabihf", "thumbv7m-none-eabi", "riscv32imac-unknown-none-elf"]

@@ -1,0 +1,49 @@
+From 1a8b3a3ba80bc1b447e905c9a91e7ec7043ddab6 Mon Sep 17 00:00:00 2001
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Date: Sun, 22 Nov 2026 11:36:15 -0600
+Subject: [PATCH 10/10] tcc (native armv7m, nommu Linux): tcc -run without
+ mprotect; memory check
+
+nommu Linux has no mprotect (ENOSYS), and all memory executes there:
+tcc -run goes on without it. The 'memory full' check from 0007 (stop
+when less than 512 kB are available) is on for the native armv7m tcc
+too: the RP2350 board has 8 MB.
+---
+ libtcc.c | 2 +-
+ tccrun.c | 7 ++++++-
+ 2 files changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/libtcc.c b/libtcc.c
+index aa77f0c..2896958 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -249,7 +249,7 @@ static void tcc_concat_str(char **pp, const char *str, int sep)
+ #undef free
+ #undef realloc
+ 
+-#if defined TCC_TARGET_RISCV32 && defined TCC_IS_NATIVE && defined __linux__
++#if (defined TCC_TARGET_RISCV32 || defined TCC_ARM_THUMB) && defined TCC_IS_NATIVE && defined __linux__
+ /* A machine with a few MB of RAM and no swap does not fail a compile that
+    takes the last of it: it evicts the page cache that every program's code
+    is in, and the whole system thrashes for minutes. So after every 128 kB
+diff --git a/tccrun.c b/tccrun.c
+index 164b436..22d2f26 100644
+--- a/tccrun.c
++++ b/tccrun.c
+@@ -487,7 +487,12 @@ static int protect_pages(void *ptr, unsigned long length, int mode)
+         PROT_READ | PROT_WRITE,
+         PROT_READ | PROT_WRITE | PROT_EXEC
+         };
+-    if (mprotect(ptr, length, protect[mode]))
++    if (mprotect(ptr, length, protect[mode])
++#ifdef TCC_ARM_THUMB
++        /* nommu Linux (RP2350): no mprotect, and all memory executes */
++        && errno != ENOSYS
++#endif
++        )
+         return -1;
+ #endif
+ /* XXX: BSD sometimes dump core with bad system call */
+-- 
+2.50.1 (Apple Git-155)
+

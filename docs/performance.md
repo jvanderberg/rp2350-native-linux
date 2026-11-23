@@ -1,0 +1,88 @@
+# Performance
+
+Measured on the board, with both cores at 348 MHz, the PSRAM at 116 MHz and
+the SD card's bus at 43.5 MHz.
+
+## Summary
+
+| | |
+|---|---|
+| CoreMark, gcc -O3 | 886 |
+| CoreMark, gcc -O2 | 850 |
+| CoreMark, built on the board with tcc | 163 |
+| Syscall | 0.84 µs |
+| `fork` + `exit` + `wait`, small ATRANS process | 5 ms |
+| `vfork` + `exec` | 8.3 ms |
+| Context switch between two ATRANS processes | about 650 µs |
+| PSRAM read | 41 MB/s |
+| PSRAM write | 13 MB/s |
+| CRNG seeded (from the hardware TRNG) | 0.6 s after the kernel starts |
+| ssh reachable | about 25 s after power-on |
+
+## ATRANS processes
+
+| | |
+|---|---|
+| `fork` + `exit` + `wait`, small process | about 5 ms |
+| ...with 1 MiB of heap in use | about 60 ms (the copy runs at about 19 MB/s) |
+| Growing the heap by 256 KiB in place | about 20 ms, nearly all of it zeroing the new heap |
+| Growing with a copy (512 KiB to 1 MiB) | about 71 ms |
+| Switch: cache flush and ATRANS write | about 130 µs |
+| Pipe round trip (two switches) | about 1.3 ms, against 0.44 ms between FDPIC processes |
+
+Most of a switch is refilling the 16 KiB XIP cache, which the switch empties
+and which also holds the kernel's text and data
+([qmi-atrans.md](qmi-atrans.md)).
+
+## Where code runs
+
+The XIP cache is the bottleneck for code: at a tight shell loop it hits
+about 95% of the time, and the misses are about half the run time. Moving
+busybox's text into SRAM is what makes the shell fast
+([memory.md](memory.md)). Shell benchmarks, in seconds:
+
+| busybox's text | uClibc | 2000-iteration `ash` loop | 30 × `echo x \| cat` | `md5sum` 512 KiB | `seq 3000 \| sed \| grep` |
+|---|---|---|---|---|---|
+| SRAM | flash, in place (the default) | 0.51 | 2.45 | 0.12 | 0.50 |
+| SRAM | PSRAM (page cache) | 0.61–0.69 | 2.42 | 0.11 | 0.38 |
+| flash | flash | 1.34 | 2.69 | 0.14 | 0.67 |
+| PSRAM | PSRAM | 1.22 | 2.49 | | 0.50 |
+
+uClibc from flash costs little except in the `sed` pipeline, and saves its
+copy in RAM. Through the uncached alias the romfs is far slower (11 s for
+the `echo` pipelines), so it is read through the cached one.
+
+Linking the kernel's `.data` and `.bss` into SRAM (`SRAM_DATA=1`) gains
+about 3%, within run-to-run noise: kernel data is not where the misses are.
+
+## SD card
+
+32 MiB with `dd bs=64k` after `drop_caches`, writes with `conv=fsync`:
+
+| | Time | Rate |
+|---|---|---|
+| raw write, `/dev/mmcblk0p2` | 13.7 s | 2.45 MB/s |
+| raw read, `/dev/mmcblk0p2` | 11.7 s | 2.86 MB/s |
+| file write, FAT | 15.7 s | 2.14 MB/s |
+| file read, FAT | 11.9 s | 2.81 MB/s |
+| ATRANS swap-out / swap-in | | 3.18 / 3.13 MB/s |
+
+The bus's ceiling at 43.5 MHz is 5.4 MB/s. The rest of a block's time is
+core 1's work per block (waiting for the card's data token, the commands)
+and, for reads, Linux copying the slots out; with one request in flight
+those barely overlap. About one read block per request waits for a free
+slot (`slot_waits`).
+
+## Flash
+
+A 4 KiB erase of `/home` stalls the whole system for about 45 ms, since
+both cores are parked while the boot ROM runs.
+
+## Pins
+
+From the two-board pin tests ([pin-tests.md](pin-tests.md)):
+
+- PIO square waves within 0.001% at 1 kHz, 100 kHz and 1 MHz.
+- GPIO edge events through the GPIO v2 uAPI: every edge at 5 ms spacing;
+  PIO edge capture down to 5 µs apart.
+- PIO DMA echo at about 18 M words a second.

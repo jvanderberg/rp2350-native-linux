@@ -1,0 +1,29 @@
+From e7b07989ecffaec8dcdee4ca9d65c6f0ce24d268 Mon Sep 17 00:00:00 2001
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Date: Sun, 22 Nov 2026 13:37:21 -0600
+Subject: [PATCH 16/17] tcc.h: a 4096-entry token hash for armv7m (16 kB of bss
+ instead of 64)
+
+---
+ tcc.h | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/tcc.h b/tcc.h
+index 2f332a8..22692bd 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -462,7 +462,11 @@ extern long double strtold (const char *__nptr, char **__endptr);
+ #define TOKSTR_MAX_SIZE     256
+ #define PACK_STACK_SIZE     8
+ 
++#ifdef TCC_ARM_THUMB
++#define TOK_HASH_SIZE       4096 /* small boards: 16 kB instead of 64 */
++#else
+ #define TOK_HASH_SIZE       16384 /* must be a power of two */
++#endif
+ #define TOK_ALLOC_INCR      512  /* must be a power of two */
+ #define TOK_MAX_SIZE        4 /* token max size in int unit when stored in string */
+ 
+-- 
+2.50.1 (Apple Git-155)
+

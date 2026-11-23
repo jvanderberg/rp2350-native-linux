@@ -1,0 +1,38 @@
+# BusyBox for native Linux, on top of Buildroot's busybox-minimal.config
+# (its choice without an MMU: hush, udhcpc, ifup, ip, ping, wget, partprobe,
+# mkdosfs).
+# pivot_root: /sbin/overlay-init moves into the overlay with it
+CONFIG_PIVOT_ROOT=y
+# DNS lookups by hand
+CONFIG_NSLOOKUP=y
+# telnetd, standalone: Buildroot's S50telnet starts it on port 23
+CONFIG_TELNETD=y
+CONFIG_FEATURE_TELNETD_STANDALONE=y
+# nc, for quick network tests
+CONFIG_NC=y
+CONFIG_NC_SERVER=y
+CONFIG_NC_EXTRA=y
+# MTD tools: the scratch flash region's tests (flash_eraseall, flashcp)
+CONFIG_FLASH_ERASEALL=y
+CONFIG_FLASHCP=y
+# tar -z and compressed archives by their magic
+CONFIG_FEATURE_SEAMLESS_GZ=y
+CONFIG_FEATURE_TAR_AUTODETECT=y
+# cpio -o
+CONFIG_FEATURE_CPIO_O=y
+# what the scripts here and udhcpc's default.script use (mktemp), and
+# everyday tools busybox-minimal.config leaves out
+CONFIG_MKTEMP=y
+CONFIG_FEATURE_FANCY_PING=y
+CONFIG_TIMEOUT=y
+CONFIG_TIME=y
+CONFIG_FREE=y
+CONFIG_UPTIME=y
+CONFIG_PIDOF=y
+CONFIG_FIND=y
+CONFIG_STAT=y
+CONFIG_TOP=y
+CONFIG_HEXDUMP=y
+CONFIG_TAR=y
+CONFIG_GUNZIP=y
+CONFIG_GZIP=y

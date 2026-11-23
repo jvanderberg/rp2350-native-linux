@@ -1,0 +1,26 @@
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Subject: [PATCH] tcc native armv7m: no MemAvailable reserve check (ATRANS pool and swap)
+
+On native Arm Linux tcc runs as an ATRANS program; its memory comes from
+the ATRANS pool and swap, which MemAvailable does not count, so the
+512 kB reserve check stops compiles that fit (stackfall with tmux, mc
+and four logins up). A real shortage still shows as a failed allocation:
+the page-cache drop and retry, then "memory full".
+---
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -263,6 +263,14 @@
+     long kb;
+     int fd, n;
+ 
++#ifdef TCC_ARM_THUMB
++    /* Native Arm Linux: tcc is an ATRANS program, and its memory comes
++       from the ATRANS pool and swap, which MemAvailable doesn't count, so
++       this check stopped compiles that fit. A real shortage shows as a
++       failed allocation instead (mem_drop_caches, then "memory full"). */
++    (void)size;
++    return;
++#endif
+     since_check += size;
+     if (since_check < MEM_CHECK_STEP)
+         return;

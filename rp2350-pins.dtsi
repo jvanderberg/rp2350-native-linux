@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * The board's pins for Linux on core 0 (pins/README.md):
+ *   /dev/gpiochip0  GP0-GP47 (the board's own pins reserved)
+ *   /dev/i2c-0      I2C0 on GP4 (SDA) / GP5 (SCL); /dev/i2c-1 I2C1 on GP6 / GP7
+ *   /dev/spidev0.0  SPI0: GP16 RX, GP17 CS (a GPIO), GP18 SCK, GP19 TX
+ *   pwmchip0        channel N = GPN, N < 40
+ *   iio:device0     rp2350-adc: GP40-GP47 and the temperature sensor
+ *   /dev/pio1, /dev/pio2, with DMA channels 12-15
+ * Core 1 keeps GP0 (PSRAM), GP8-GP11 (SD card, SPI1), GP23/24/25/29 (Wi-Fi,
+ * PIO0) and USB. The clocks are the boot stub's: clk_sys = clk_peri =
+ * 348 MHz, clk_adc 48 MHz.
+ */
+#define RP2350_SYS_HZ 348000000
+#define PIO_GPIOS <&gpio0 0 0>, <&gpio0 1 0>, <&gpio0 2 0>, <&gpio0 3 0>, <&gpio0 4 0>, <&gpio0 5 0>, <&gpio0 6 0>, <&gpio0 7 0>, \
+	<&gpio0 8 0>, <&gpio0 9 0>, <&gpio0 10 0>, <&gpio0 11 0>, <&gpio0 12 0>, <&gpio0 13 0>, <&gpio0 14 0>, <&gpio0 15 0>, \
+	<&gpio0 16 0>, <&gpio0 17 0>, <&gpio0 18 0>, <&gpio0 19 0>, <&gpio0 20 0>, <&gpio0 21 0>, <&gpio0 22 0>, <&gpio0 23 0>, \
+	<&gpio0 24 0>, <&gpio0 25 0>, <&gpio0 26 0>, <&gpio0 27 0>, <&gpio0 28 0>, <&gpio0 29 0>, <&gpio0 30 0>, <&gpio0 31 0>, \
+	<&gpio0 32 0>, <&gpio0 33 0>, <&gpio0 34 0>, <&gpio0 35 0>, <&gpio0 36 0>, <&gpio0 37 0>, <&gpio0 38 0>, <&gpio0 39 0>, \
+	<&gpio0 40 0>, <&gpio0 41 0>, <&gpio0 42 0>, <&gpio0 43 0>, <&gpio0 44 0>, <&gpio0 45 0>, <&gpio0 46 0>, <&gpio0 47 0>
+
+/ {
+	aliases {
+		i2c0 = &i2c0;
+		i2c1 = &i2c1;
+		spi0 = &spi0;
+	};
+};
+
+&{/soc} {
+	gpio0: gpio@40028000 {
+		compatible = "raspberrypi,rp2350-gpio";
+		reg = <0x40028000 0x320>;
+		interrupts = <21>;	/* IO_IRQ_BANK0 */
+		gpio-controller;
+		#gpio-cells = <2>;
+		interrupt-controller;
+		#interrupt-cells = <2>;
+		/* PSRAM_CS, I2C0/1, SPI1 (SD), SPI0 but its CS, Wi-Fi, ADC */
+		gpio-reserved-ranges = <0 1>, <4 4>, <8 4>, <16 1>, <18 2>, <23 3>,
+				       <29 1>, <40 8>;
+		gpio-line-names =
+			"PSRAM_CS", "GP1", "GP2", "GP3", "I2C0_SDA", "I2C0_SCL", "I2C1_SDA", "I2C1_SCL",
+			"SPI1_RX", "SPI1_CS", "SPI1_SCK", "SPI1_TX", "GP12", "GP13", "GP14", "GP15",
+			"SPI0_RX", "SPI0_CS", "SPI0_SCK", "SPI0_TX", "GP20", "GP21", "GP22", "WL_ON",
+			"WL_D", "WL_CS", "GP26", "GP27", "GP28", "WL_CLK", "GP30", "GP31",
+			"GP32", "GP33", "GP34", "GP35", "GP36", "GP37", "GP38", "GP39",
+			"ADC0", "ADC1", "ADC2", "ADC3", "ADC4", "ADC5", "ADC6", "ADC7";
+	};
+
+	i2c0: i2c@40090000 {
+		compatible = "raspberrypi,rp2350-i2c";
+		reg = <0x40090000 0x100>;
+		clock-frequency = <RP2350_SYS_HZ>;	/* clk_sys */
+		raspberrypi,pins = <4 5>;		/* SDA, SCL */
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	i2c1: i2c@40098000 {
+		compatible = "raspberrypi,rp2350-i2c";
+		reg = <0x40098000 0x100>;
+		clock-frequency = <RP2350_SYS_HZ>;
+		raspberrypi,pins = <6 7>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+
+	spi0: spi@40080000 {
+		compatible = "raspberrypi,rp2350-spi";
+		reg = <0x40080000 0x1000>;
+		clock-frequency = <RP2350_SYS_HZ>;	/* clk_peri */
+		raspberrypi,pins = <16 18 19>;		/* RX, SCK, TX */
+		cs-gpios = <&gpio0 17 1>;		/* active low */
+		#address-cells = <1>;
+		#size-cells = <0>;
+		spidev@0 {
+			compatible = "rohm,dh2228fv";
+			reg = <0>;
+			spi-max-frequency = <50000000>;
+		};
+	};
+
+	pwm@400a8000 {
+		compatible = "raspberrypi,rp2350-pwm";
+		reg = <0x400a8000 0x110>;
+		clock-frequency = <RP2350_SYS_HZ>;
+		#pwm-cells = <3>;
+	};
+
+	adc@400a0000 {
+		compatible = "raspberrypi,rp2350-adc";
+		reg = <0x400a0000 0x24>;
+		#io-channel-cells = <1>;
+	};
+
+	dma@50000300 {
+		compatible = "raspberrypi,rp2350-pio-dma";
+		reg = <0x50000300 0x100>;	/* channels 12-15 */
+		interrupts = <13>;		/* DMA_IRQ_3 */
+	};
+
+	/* every GPIO line (by number), which the driver takes from gpiolib
+	 * while a block has the pin */
+	pio@50300000 {
+		compatible = "raspberrypi,rp2350-pio";
+		reg = <0x50300000 0x4000>;	/* with the XOR/SET/CLR aliases */
+		interrupts = <17>;		/* PIO1_IRQ_0 */
+		clock-frequency = <RP2350_SYS_HZ>;
+		raspberrypi,block = <1>;
+		pio-gpios = PIO_GPIOS;
+	};
+
+	pio@50400000 {
+		compatible = "raspberrypi,rp2350-pio";
+		reg = <0x50400000 0x4000>;
+		interrupts = <19>;		/* PIO2_IRQ_0 */
+		clock-frequency = <RP2350_SYS_HZ>;
+		raspberrypi,block = <2>;
+		pio-gpios = PIO_GPIOS;
+	};
+};
+
+#ifdef PINS_TESTFS
+/*
+ * Testing only (PINS_TESTFS=1 run-build.sh kernel, pins/load-test.sh): a
+ * romfs of out/pins-root in flash at 0x10C00000, loaded without rebuilding
+ * the squashfs root. mount -t romfs mtd:pins /pins
+ */
+&{/soc} {
+	pins-test@10c00000 {
+		compatible = "mtd-rom";
+		reg = <0x10c00000 0x200000>;
+		bank-width = <4>;
+		label = "pins";
+	};
+};
+#endif

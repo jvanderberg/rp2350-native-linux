@@ -1,0 +1,51 @@
+From 50c853c2b6efc305757d95ce68367e42e4ea5b5c Mon Sep 17 00:00:00 2001
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Date: Sun, 22 Nov 2026 12:19:11 -0600
+Subject: [PATCH] tcc (native armv7m): drop the page cache and retry when an
+ allocation fails
+
+On the nommu board a process grows by getting a bigger contiguous block, and the page cache that the headers and libc.a were just read into is spread across free memory. When realloc fails, write 1 to /proc/sys/vm/drop_caches and try once more.
+---
+ libtcc.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/libtcc.c b/libtcc.c
+index 2896958..827687c 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -284,8 +284,23 @@ static void mem_check(unsigned long size)
+         exit(1);
+     }
+ }
++
++/* A free run of contiguous memory is what a nommu process needs to grow
++   (ATRANS blocks), and the page cache (the headers and libc.a just read)
++   scatters over all of it. When an allocation fails, drop the clean page
++   cache once and retry. */
++static int mem_drop_caches(void)
++{
++    int fd = open("/proc/sys/vm/drop_caches", O_WRONLY), ok;
++    if (fd < 0)
++        return 0;
++    ok = write(fd, "1", 1) == 1;
++    close(fd);
++    return ok;
++}
+ #else
+ #define mem_check(size)
++#define mem_drop_caches() 0
+ #endif
+ 
+ static void *default_reallocator(void *ptr, unsigned long size)
+@@ -298,6 +313,8 @@ static void *default_reallocator(void *ptr, unsigned long size)
+     else {
+         mem_check(size);
+         ptr1 = realloc(ptr, size);
++        if (!ptr1 && mem_drop_caches())
++            ptr1 = realloc(ptr, size);
+         if (!ptr1) {
+             fprintf(stderr, "tcc: memory full\n");
+             exit (1);
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,8 @@
+@name Core 0, the Cortex-M33 Forge
+@exit east bus
+@look pipeline Fetch, decode, execute. Three anvils in a row. Sparks fly whenever a branch is mispredicted, which is often.
+@look registers Thirteen glowing lockers and three with special jobs: the stack, the way back, and where it is going next. Someone has scratched "PC WAS HERE" on the last one, but it has already moved on.
+A hot, bright workshop where a three-stage |14pipeline|07 hammers instructions
+flat, one per clock. A wall of |11registers|07 glows along the back. Core 0 never
+looks up from its work; it has a whole kernel to run and it is |12very|07
+behind schedule.

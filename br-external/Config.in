@@ -1,0 +1,4 @@
+# One line per package: source "$BR2_EXTERNAL_RP2350_PATH/package/<pkg>/Config.in"
+source "$BR2_EXTERNAL_RP2350_PATH/package/micropython-machine/Config.in"
+source "$BR2_EXTERNAL_RP2350_PATH/package/pins-examples/Config.in"
+source "$BR2_EXTERNAL_RP2350_PATH/package/libpio/Config.in"

@@ -1,0 +1,34 @@
+From 5e9ee4658138056bf0440a89cefa5d470b3b832b Mon Sep 17 00:00:00 2001
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Date: Sun, 22 Nov 2026 13:37:21 -0600
+Subject: [PATCH 17/17] armv7m: ATRANS v3 layout by default
+
+Executables get their read-only segments at 0x11c00000 (the shared text window) and their writable ones at 0x11020000, after a 128 KiB stack, as atrans-gcc does. -Wl,-Ttext=0x11020000 gives the v2 single-block layout.
+---
+ tccelf.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/tccelf.c b/tccelf.c
+index e95f0f5..c59d409 100644
+--- a/tccelf.c
++++ b/tccelf.c
+@@ -2453,6 +2453,16 @@ static int layout_sections(TCCState *s1, int *sec_order, struct dyn_inf *d)
+     }
+ 
+     data_placed = 0;
++#ifdef TCC_ARM_THUMB
++    /* ATRANS v3 by default: text and read-only data shared in the text
++       window, the writable segments after a 128 KiB stack in the data
++       window. -Wl,-Ttext=0x11020000 gives the v2 layout (one block). */
++    if (s1->output_type == TCC_OUTPUT_EXE && !s1->has_text_addr) {
++        s1->has_text_addr = 1, s1->text_addr = 0x11c00000;
++        if (!s1->has_data_addr)
++            s1->has_data_addr = 1, s1->data_addr = 0x11020000;
++    }
++#endif
+     s_align = ELF_PAGE_SIZE;
+     if (s1->section_align)
+         s_align = s1->section_align;
+-- 
+2.50.1 (Apple Git-155)
+

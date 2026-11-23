@@ -1,0 +1,29 @@
+From 9d950f593590d580d948d89966bb04d2947ef278 Mon Sep 17 00:00:00 2001
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Date: Sun, 22 Nov 2026 11:40:32 -0600
+Subject: [PATCH] armv7m: link libc again after libgcc.a
+
+A Linux libgcc (the userland sysroot's arm-atrans-linux-musleabi) has a division by zero handler that calls raise(), which is only resolved if libc is searched again after libgcc.
+---
+ tccelf.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/tccelf.c b/tccelf.c
+index a22f24d..2810322 100644
+--- a/tccelf.c
++++ b/tccelf.c
+@@ -1881,6 +1881,11 @@ ST_FUNC void tcc_add_runtime(TCCState *s1)
+         /* soft-float and long long helpers (__adddf3, __divdi3, ...) */
+         tcc_add_dll(s1, "libgcc.a", AFF_PRINT_ERROR);
+ #endif
++#ifdef TCC_ARM_THUMB
++        /* a Linux libgcc's division by zero handler calls raise() */
++        if (TCC_LIBTCC1[0])
++            tcc_add_library(s1, "c");
++#endif
+ #ifndef TCC_TARGET_MACHO
+         if (s1->output_type != TCC_OUTPUT_MEMORY)
+             tccelf_add_crtend(s1);
+-- 
+2.50.1 (Apple Git-155)
+

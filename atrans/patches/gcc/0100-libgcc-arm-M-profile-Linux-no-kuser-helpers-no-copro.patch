@@ -1,0 +1,163 @@
+libgcc: arm: M-profile Linux (native RP2350 ATRANS programs)
+
+No kuser helpers exist there: the __sync_* helpers use ldrex/strex (and a
+process-wide spinlock for 64-bit, as ARMv7-M has no ldrexd), and the
+unwinder's VFP/iWMMXt save/restore routines are empty for soft-float M
+profile instead of coprocessor instructions.
+
+diff -ruN a/libgcc/config/arm/libunwind.S b/libgcc/config/arm/libunwind.S
+--- a/libgcc/config/arm/libunwind.S	2026-11-22 11:01:13.258206292 -0600
++++ b/libgcc/config/arm/libunwind.S	2026-11-22 11:01:55.402275747 -0600
+@@ -209,6 +209,40 @@
+ 	FUNC_END restore_core_regs
+ 	UNPREFIX restore_core_regs
+ 
++#if __ARM_ARCH_PROFILE == 'M' && !defined (__ARM_FP)
++/* Soft-float M profile: there are no VFP or iWMMXt registers to save
++   or restore (and no coprocessor instructions may be executed).  */
++ARM_FUNC_START gnu_Unwind_Restore_VFP
++	RET
++
++ARM_FUNC_START gnu_Unwind_Save_VFP
++	RET
++
++ARM_FUNC_START gnu_Unwind_Restore_VFP_D
++	RET
++
++ARM_FUNC_START gnu_Unwind_Save_VFP_D
++	RET
++
++ARM_FUNC_START gnu_Unwind_Restore_VFP_D_16_to_31
++	RET
++
++ARM_FUNC_START gnu_Unwind_Save_VFP_D_16_to_31
++	RET
++
++ARM_FUNC_START gnu_Unwind_Restore_WMMXD
++	RET
++
++ARM_FUNC_START gnu_Unwind_Save_WMMXD
++	RET
++
++ARM_FUNC_START gnu_Unwind_Restore_WMMXC
++	RET
++
++ARM_FUNC_START gnu_Unwind_Save_WMMXC
++	RET
++
++#else
+ /* Load VFP registers d0-d15 from the address in r0.
+    Use this to load from FSTMX format.  */
+ ARM_FUNC_START gnu_Unwind_Restore_VFP
+@@ -309,6 +343,8 @@
+ 	stc2  p1, cr11, [r0], #4 /* wstrw wcgr3, [r0], #4 */
+ 	RET
+ 
++#endif /* soft-float M profile */
++
+ /* Wrappers to save core registers, then call the real routine.   */
+ 
+ .macro  UNWIND_WRAPPER name nargs
+diff -ruN a/libgcc/config/arm/linux-atomic-64bit.c b/libgcc/config/arm/linux-atomic-64bit.c
+--- a/libgcc/config/arm/linux-atomic-64bit.c	2026-11-22 11:01:13.267814109 -0600
++++ b/libgcc/config/arm/linux-atomic-64bit.c	2026-11-22 11:01:55.401934538 -0600
+@@ -36,6 +36,37 @@
+ extern int write (int fd, const void *buf, unsigned int count);
+ extern void abort (void);
+ 
++#if __ARM_ARCH_PROFILE == 'M'
++/* ARMv7-M has no ldrexd/strexd and Linux there has no kuser helpers:
++   64-bit operations take a process-wide spinlock (sched_yield while it is
++   held: the holder may be a preempted thread on this core).  Memory is
++   never shared between processes, so the lock covers every user.  */
++static int __sync8_lock;
++
++static inline void
++__sync8_yield (void)
++{
++  register long r0 __asm__ ("r0");
++  __asm__ __volatile__ ("mov ip, r7\n\tmovs r7, #158\n\tsvc 0\n\tmov r7, ip"
++			: "=r" (r0) : : "ip", "r1", "r2", "r3", "memory");
++}
++
++static int
++__kernel_cmpxchg64 (const long long *oldval, const long long *newval,
++		    long long *ptr)
++{
++  int fail;
++
++  while (__sync_lock_test_and_set (&__sync8_lock, 1))
++    __sync8_yield ();
++  fail = *ptr != *oldval;
++  if (!fail)
++    *ptr = *newval;
++  __sync_lock_release (&__sync8_lock);
++  return fail;
++}
++
++#else
+ /* Kernel helper for compare-and-exchange.  */
+ typedef int (__kernel_cmpxchg64_t) (const long long* oldval,
+ 					const long long* newval,
+@@ -66,6 +97,8 @@
+   &__check_for_sync8_kernelhelper
+ };
+ 
++#endif /* M profile */
++
+ #define HIDDEN __attribute__ ((visibility ("hidden")))
+ 
+ #define FETCH_AND_OP_WORD64(OP, PFX_OP, INF_OP)			\
+diff -ruN a/libgcc/config/arm/linux-atomic.c b/libgcc/config/arm/linux-atomic.c
+--- a/libgcc/config/arm/linux-atomic.c	2026-11-22 11:01:13.263103680 -0600
++++ b/libgcc/config/arm/linux-atomic.c	2026-11-22 11:01:55.401344161 -0600
+@@ -23,6 +23,40 @@
+ see the files COPYING3 and COPYING.RUNTIME respectively.  If not, see
+ <http://www.gnu.org/licenses/>.  */
+ 
++#if __ARM_ARCH_PROFILE == 'M'
++/* ARMv7-M/ARMv8-M Linux has no kuser helpers (nothing is mapped at
++   0xffff0fxx): compare-and-exchange with ldrex/strex and a plain dmb.
++   Same contract as the kernel helper: 0 when *PTR held OLDVAL and now
++   holds NEWVAL, nonzero otherwise.  */
++static inline int
++__kernel_cmpxchg (int oldval, int newval, int *ptr)
++{
++  int cur, fail;
++
++  __asm__ __volatile__ ("dmb" : : : "memory");
++  do
++    {
++      __asm__ __volatile__ ("ldrex %0, [%1]" : "=&r" (cur) : "r" (ptr) : "memory");
++      if (cur != oldval)
++	{
++	  __asm__ __volatile__ ("clrex" : : : "memory");
++	  return 1;
++	}
++      __asm__ __volatile__ ("strex %0, %2, [%1]"
++			    : "=&r" (fail) : "r" (ptr), "r" (newval) : "memory");
++    }
++  while (fail);
++  __asm__ __volatile__ ("dmb" : : : "memory");
++  return 0;
++}
++
++static inline void
++__kernel_dmb (void)
++{
++  __asm__ __volatile__ ("dmb" : : : "memory");
++}
++
++#else
+ /* Kernel helper for compare-and-exchange.  */
+ typedef int (__kernel_cmpxchg_t) (int oldval, int newval, int *ptr);
+ 
+@@ -82,6 +116,8 @@
+ 
+ #endif
+ 
++#endif /* M profile */
++
+ /* Note: we implement byte, short and int versions of atomic operations using
+    the above kernel helpers; see linux-atomic-64bit.c for "long long" (64-bit)
+    operations.  */

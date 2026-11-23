@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: GPL-2.0
+menu "Raspberry Pi RP2350 drivers"
+
+config RP2350_TIMER
+	bool "RP2350 TIMER0 clocksource and clockevent"
+	depends on OF && HAS_IOMEM
+	select TIMER_OF
+	select CLKSRC_MMIO
+
+config RP2350_RINGCON
+	bool "RP2350 shared-memory ring console (USB CDC served by core 1)"
+	depends on OF && HAS_IOMEM && TTY
+	select SERIAL_CORE
+	select SERIAL_CORE_CONSOLE
+	select SERIAL_EARLYCON
+
+config RP2350_NET
+	bool "RP2350 Wi-Fi as Ethernet (radio run by core 1)"
+	depends on OF && HAS_IOMEM && NETDEVICES
+	help
+	  eth0 over frame rings in SRAM: core 1 runs the CYW43439 radio
+	  (boot/src/wifi.rs) and passes Ethernet frames.
+
+config RP2350_SD
+	bool "RP2350 SD card (driven by core 1)"
+	depends on OF && HAS_IOMEM && BLOCK
+	select CRC_ITU_T
+	help
+	  A block device, mmcblk0, whose requests core 1 carries out on the
+	  card over SPI1. No MMC layer.
+
+config RP2350_FLASH
+	bool "RP2350 flash regions as NOR MTD devices (/home)"
+	depends on OF && HAS_IOMEM && MTD
+	help
+	  Erase and program run in the boot stub's SRAM routine with core 1
+	  parked, while the kernel executes in place from the same flash.
+
+config RP2350_ATRANS
+	bool "Per-process address spaces through QMI ATRANS (prototype)"
+	depends on ARCH_RP2350 && !MMU && PROC_FS
+	help
+	  Static ELF programs linked at 0x11000000 each get their own PSRAM
+	  block, shown in the ATRANS4 window while they run, and real fork().
+
+config RP2350_MEMSTAT
+	bool "/proc/memstat and /proc/memmap: where kernel memory goes"
+	depends on ARCH_RP2350 && SLUB && PROC_FS
+	help
+	  Slab pages per cache, the live large kmallocs by caller, and a map
+	  of every page by kind. Patches mm/slub.c (apply.sh).
+
+config RP2350_ATRANS_SWAP
+	bool "Whole-process swapping for ATRANS processes"
+	depends on RP2350_ATRANS && BLOCK
+	help
+	  When no PSRAM block can be found for an ATRANS process (exec, fork,
+	  growth), write a sleeping one out to a swap device or file and
+	  bring it back when it wakes. Enabled at run time with
+	  "echo /dev/xxx > /proc/atrans-swap" (mkswap'ed device or file).
+
+config RP2350_SRAM_DATA
+	bool "Kernel .data and .bss in SRAM (0x20000000)"
+	depends on ARCH_RP2350 && XIP_KERNEL
+	help
+	  Link the XIP kernel's RAM part (.data, .bss, init data, the init
+	  stack) at the start of on-chip SRAM instead of PSRAM. SRAM is not
+	  given to the page allocator, so the boot stub's own RAM and any other
+	  SRAM user must stay clear of [0x20000000, _end). An experiment: PSRAM
+	  goes through the 16 KiB XIP cache, SRAM does not.
+
+# The board's pins on core 0 (pins/README.md), with the standard Linux
+# interfaces (gpiochip, i2c-dev, spidev, pwm, iio) and /dev/pioN.
+config RP2350_GPIO
+	bool "RP2350 bank 0 GPIO (GP0-GP47) with edge interrupts"
+	depends on ARCH_RP2350 && GPIOLIB && OF
+	select GPIOLIB_IRQCHIP
+
+config RP2350_I2C
+	bool "RP2350 I2C0/I2C1 controllers"
+	depends on ARCH_RP2350 && I2C && OF
+
+config RP2350_SPI
+	bool "RP2350 SPI0 controller (PL022, polled)"
+	depends on ARCH_RP2350 && SPI_MASTER && OF
+
+config RP2350_PWM
+	bool "RP2350 PWM, one channel per GPIO"
+	depends on ARCH_RP2350 && PWM && OF && RP2350_GPIO
+
+config RP2350_ADC
+	bool "RP2350B ADC (GP40-GP47, temperature sensor)"
+	depends on ARCH_RP2350 && IIO && OF
+
+config RP2350_TRNG
+	bool "RP2350 TRNG as a hardware random number generator"
+	depends on ARCH_RP2350 && OF && HW_RANDOM
+	help
+	  Seeds the kernel's random pool from the chip's TRNG at boot, so
+	  getrandom() (dropbear's host keys and sessions) doesn't wait tens
+	  of seconds for jitter entropy.
+
+config RP2350_PIO
+	bool "/dev/pio1, /dev/pio2: the RP2350's PIO1 and PIO2 with DMA"
+	depends on ARCH_RP2350 && RP2350_GPIO
+	help
+	  The /dev/pio interface (rp2350-pio.h): a block's registers and a
+	  DMA buffer by mmap, pins claimed through gpiolib, poll on the
+	  block's IRQ0, DMA on channels 12-15 by ioctl.
+
+endmenu

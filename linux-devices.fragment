@@ -1,0 +1,85 @@
+# On top of linux.fragment (build.sh merges it after): the devices core 1
+# serves (Wi-Fi, SD card, flash writes), the root filesystem in flash and
+# what the userland expects (sockets, the network).
+#
+# Root: squashfs in flash at 0x10400000 (rp2350.dts "rootfs", mtd1) with a
+# tmpfs overlay (/sbin/overlay-init), not an initramfs in the kernel image.
+# No initramfs, so no initrd support and none of its decompressors (zstd,
+# xz, lzma, bzip2...: about 150 KB of the 2016 KB the kernel may take).
+# CONFIG_BLK_DEV_INITRD is not set
+CONFIG_INITRAMFS_SOURCE=""
+CONFIG_BLOCK=y
+# MBR partitions only (SD cards)
+CONFIG_PARTITION_ADVANCED=y
+CONFIG_MSDOS_PARTITION=y
+# CONFIG_EFI_PARTITION is not set
+CONFIG_MTD_BLOCK_RO=y
+# the rootfs node is "mtd-rom" (physmap with map_rom)
+CONFIG_MTD_ROM=y
+CONFIG_SQUASHFS=y
+CONFIG_SQUASHFS_LZ4=y
+# CONFIG_SQUASHFS_ZLIB is not set
+CONFIG_SQUASHFS_DECOMP_SINGLE=y
+# one cached fragment block, not three (each 16 KiB of kmalloc-4k pages;
+# the option needs SQUASHFS_EMBEDDED)
+CONFIG_SQUASHFS_EMBEDDED=y
+CONFIG_SQUASHFS_FRAGMENT_CACHE_SIZE=1
+CONFIG_OVERLAY_FS=y
+# /home: jffs2 on the flash region at 0x10100000 (rp2350-flash.c). No write
+# buffer (bit-writable NOR), no zlib (its workspace is ~270 KiB), rtime only
+# (the compression /home's jffs2 nodes use).
+CONFIG_RP2350_FLASH=y
+CONFIG_JFFS2_FS=y
+# CONFIG_JFFS2_FS_WRITEBUFFER is not set
+CONFIG_JFFS2_COMPRESSION_OPTIONS=y
+# CONFIG_JFFS2_ZLIB is not set
+# CONFIG_JFFS2_LZO is not set
+CONFIG_JFFS2_RTIME=y
+# CONFIG_JFFS2_RUBIN is not set
+CONFIG_JFFS2_CMODE_PRIORITY=y
+# CONFIG_MTD_OF_PARTS is not set
+# SD card (rp2350-sd.c, mmcblk0): FAT. No swap: CONFIG_SWAP needs an MMU.
+CONFIG_RP2350_SD=y
+CONFIG_VFAT_FS=y
+CONFIG_NLS=y
+CONFIG_NLS_CODEPAGE_437=y
+CONFIG_NLS_ISO8859_1=y
+CONFIG_NLS_UTF8=y
+# network: eth0 is the Wi-Fi radio run by core 1 (rp2350-net.c)
+CONFIG_NET=y
+CONFIG_UNIX=y
+CONFIG_INET=y
+CONFIG_PACKET=y
+# CONFIG_IPV6 is not set
+# CONFIG_WIRELESS is not set
+CONFIG_NETDEVICES=y
+CONFIG_NET_CORE=y
+# CONFIG_ETHERNET is not set
+# CONFIG_WLAN is not set
+CONFIG_RP2350_NET=y
+CONFIG_INET_TABLE_PERTURB_ORDER=8
+# CONFIG_ETHTOOL_NETLINK is not set
+# CONFIG_INET_DIAG is not set
+# CONFIG_MQ_IOSCHED_DEADLINE is not set
+# CONFIG_MQ_IOSCHED_KYBER is not set
+# the chip's TRNG seeds the random pool at boot (rp2350-trng.c): without it
+# getrandom() waits 20-70 s for jitter entropy, and dropbear with it
+CONFIG_HW_RANDOM=y
+CONFIG_RP2350_TRNG=y
+# what tmux, ssh and friends use
+CONFIG_EPOLL=y
+CONFIG_EVENTFD=y
+CONFIG_TIMERFD=y
+CONFIG_SIGNALFD=y
+CONFIG_FILE_LOCKING=y
+CONFIG_INOTIFY_USER=y
+CONFIG_SYSVIPC=y
+# No keyboard, mouse or display
+# CONFIG_VT is not set
+# CONFIG_INPUT is not set
+# CONFIG_SERIO is not set
+# CONFIG_HID_SUPPORT is not set
+# size: stack variables not zeroed at every function entry (smaller text),
+# the small CRC32 tables (jffs2 checks every node with it)
+CONFIG_INIT_STACK_NONE=y
+CONFIG_CRC32_SARWATE=y

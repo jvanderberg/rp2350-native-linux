@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * RP2350, Cortex-M33 core 0 running nommu Linux. Core 1 runs the I/O
+ * firmware (boot/) and owns USB, the Wi-Fi radio (PIO0,
+ * GP23-25/29) and the SD card (SPI1, GP8-11); Linux uses only what is
+ * listed here.
+ */
+/dts-v1/;
+
+/ {
+	model = "RP2350B (Cortex-M33), native nommu Linux";
+	compatible = "raspberrypi,rp2350";
+	#address-cells = <1>;
+	#size-cells = <1>;
+	interrupt-parent = <&nvic>;
+
+	chosen {
+		bootargs = "console=ttyRC0 earlycon root=/dev/mtdblock1 rootfstype=squashfs ro init=/sbin/overlay-init";
+		stdout-path = &rcon;
+	};
+
+	/* PSRAM through the ATRANS5/6 windows (set up by the boot stub) */
+	memory@11400000 {
+		device_type = "memory";
+		reg = <0x11400000 0x800000>;
+	};
+
+	soc {
+		compatible = "simple-bus";
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		nvic: interrupt-controller@e000e100 {
+			compatible = "arm,armv7m-nvic";
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			reg = <0xe000e100 0xc00>;
+		};
+
+		timer@400b0000 {
+			compatible = "raspberrypi,rp2350-timer";
+			reg = <0x400b0000 0x50>;
+			interrupts = <0>;	/* TIMER0_IRQ_0 */
+		};
+
+		/*
+		 * SRAM0-7 left free by the kernel image (build.sh fills in the
+		 * range; the I/O area is at 0x20068000, the boot stub's RAM at
+		 * 0x2006c000): a RAM MTD (mtd0) that
+		 * tests/sramload.c fills with a romfs, so programs on it run
+		 * their text in place from SRAM.
+		 */
+		sram-text@0 {
+			compatible = "mtd-ram";
+			reg = <SRAM_TEXT_BASE SRAM_TEXT_SIZE>;
+			bank-width = <4>;
+			label = "sram-text";
+		};
+
+		/*
+		 * The root filesystem: squashfs in flash at 0x10400000
+		 * (load.sh), up to the kernel at 0x10D80000, read through
+		 * the uncached XIP alias (0x14000000 up) so it doesn't push
+		 * kernel text out of the XIP cache. mtd1, root=/dev/mtdblock1.
+		 */
+		rootfs@14400000 {
+			compatible = "mtd-rom";
+			reg = <0x14400000 0x980000>;
+			bank-width = <4>;
+			label = "rootfs";
+		};
+
+		/*
+		 * xip: an uncompressed romfs in flash at 0x10200000 (load.sh,
+		 * mkxiprom.py), mtd2. /sbin/overlay-init binds its files (shared
+		 * libraries, big FDPIC programs) over their squashfs copies;
+		 * romfs on a ROM MTD maps them in place, so their text runs from
+		 * flash instead of being copied into RAM. Through the cached XIP
+		 * alias: text wants the cache (through the uncached one, 0x14200000,
+		 * 30 x "echo x | cat" takes 11.0 s instead of 2.4 s).
+		 */
+		xip@10200000 {
+			compatible = "mtd-rom";
+			reg = <0x10200000 0x1f8000>;
+			bank-width = <4>;
+			label = "xip";
+		};
+
+		/*
+		 * Flash that Linux writes, through the boot stub's SRAM routine
+		 * (rp2350-flash.c): /home (jffs2, mtd3) and a 64 KiB scratch
+		 * region for tests (mtd4). The second reg is the I/O area.
+		 */
+		flash@10100000 {
+			compatible = "raspberrypi,rp2350-flash";
+			reg = <0x10100000 0x100000>, <0x20068000 0x4000>;
+			label = "home";
+		};
+
+		flash@10ff0000 {
+			compatible = "raspberrypi,rp2350-flash";
+			reg = <0x10ff0000 0x10000>, <0x20068000 0x4000>;
+			label = "scratch";
+		};
+
+		trng@400f0000 {
+			compatible = "raspberrypi,rp2350-trng";
+			reg = <0x400f0000 0x200>;
+		};
+
+		/*
+		 * The I/O area shared with core 1 (rp2350-io.h); core 1 rings
+		 * SIO_IRQ_BELL (26) for both.
+		 */
+		ethernet@20068040 {
+			compatible = "raspberrypi,rp2350-net";
+			reg = <0x20068000 0x4000>;
+			interrupts = <26>;
+		};
+
+		sd@20068080 {
+			compatible = "raspberrypi,rp2350-sd";
+			reg = <0x20068000 0x4000>;
+			interrupts = <26>;
+		};
+
+		/* SRAM8/SRAM9: the console rings shared with core 1 */
+		rcon: console@20080000 {
+			compatible = "raspberrypi,rp2350-ringcon";
+			reg = <0x20080000 0x2000>;
+		};
+	};
+};
+#include "rp2350-pins.dtsi"

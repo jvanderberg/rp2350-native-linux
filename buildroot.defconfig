@@ -1,0 +1,27 @@
+# Native nommu Linux on the RP2350's Cortex-M33 cores. The M33 (ARMv8-M
+# Mainline) runs ARMv7-M code, so the toolchain targets cortex-M4,
+# soft-float: the kernel does not save FPU state for user tasks.
+BR2_arm=y
+BR2_cortex_m4=y
+BR2_BINFMT_FDPIC=y
+BR2_TOOLCHAIN_BUILDROOT_UCLIBC=y
+BR2_KERNEL_HEADERS_6_12=y
+BR2_OPTIMIZE_S=y
+BR2_STRIP_strip=y
+# BR2_UCLIBC_INSTALL_UTILS is not set
+BR2_TARGET_GENERIC_HOSTNAME="rp2350"
+BR2_TARGET_GENERIC_ISSUE="native Linux on the RP2350 (Cortex-M33)"
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_DEVTMPFS=y
+BR2_TARGET_GENERIC_GETTY_PORT="console"
+# the Mac terminal on the console is an xterm
+BR2_TARGET_GENERIC_GETTY_TERM="xterm-256color"
+BR2_TARGET_ROOTFS_CPIO=y
+# the root filesystem in flash at 0x10400000 (load.sh): squashfs, LZ4, 16 KiB
+# blocks
+BR2_TARGET_ROOTFS_SQUASHFS=y
+BR2_TARGET_ROOTFS_SQUASHFS4_LZ4=y
+BR2_TARGET_ROOTFS_SQUASHFS_BS_16K=y
+BR2_TARGET_ROOTFS_SQUASHFS_EXTREME_COMP=y
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="/native/busybox.fragment"
+# BR2_TARGET_ROOTFS_TAR is not set
+BR2_ROOTFS_POST_BUILD_SCRIPT="/native/post-build.sh /native/post-build-devices.sh"

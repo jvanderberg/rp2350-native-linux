@@ -1,0 +1,444 @@
+arm: M profile (ARMv7-M/ARMv8-M Linux, native RP2350 ATRANS programs)
+
+There is no TPIDRURO and no kuser helper page. The thread pointer comes
+from the word the ATRANS v2 kernel keeps at 0x11000000 (read-only to user
+mode, rewritten on set_tls and every switch) when __set_thread_area finds
+it, else from the get_tls syscall (0xf0006): in __get_tp() and
+__aeabi_read_tp. The kernel has no COMPAT_32BIT_TIME, so the plain time
+syscall names are the time64 ones (nothing tries nanosleep/futex/... time32
+first). setjmp/longjmp save no coprocessor state, atomics.s (now .S) drops
+its cp15/kuser variants, tlsdesc.S calls __aeabi_read_tp.
+
+diff -ruN musl-orig/arch/arm/pthread_arch.h musl-1.2.6/arch/arm/pthread_arch.h
+--- musl-orig/arch/arm/pthread_arch.h	2026-03-20 10:40:00.000000000 -0500
++++ musl-1.2.6/arch/arm/pthread_arch.h	2026-11-22 11:52:40.458763925 -0600
+@@ -1,4 +1,25 @@
+-#if ((__ARM_ARCH_6K__ || __ARM_ARCH_6KZ__ || __ARM_ARCH_6ZK__) && !__thumb__) \
++#if __ARM_ARCH_PROFILE == 'M'
++
++/* ARMv7-M/ARMv8-M: no TPIDRURO register and no kuser helpers.
++ * On native RP2350 Linux (ATRANS processes) the kernel keeps the running
++ * thread's pointer in a user-readable word, found at startup by
++ * __set_thread_area. Otherwise it comes from the get_tls syscall (0xf0006),
++ * which returns it in r0 and preserves every other register. r7 may be the
++ * frame pointer, so it is saved in ip around the call rather than declared
++ * clobbered. */
++extern hidden const uintptr_t *__atrans_tp_word;
++
++static inline uintptr_t __get_tp()
++{
++	const uintptr_t *w = __atrans_tp_word;
++	if (w) return *w;
++	register uintptr_t tp __asm__("r0");
++	__asm__ ( "mov ip, r7\n\tmovw r7, #6\n\tmovt r7, #15\n\tsvc 0\n\tmov r7, ip"
++		: "=r"(tp) : : "ip" );
++	return tp;
++}
++
++#elif ((__ARM_ARCH_6K__ || __ARM_ARCH_6KZ__ || __ARM_ARCH_6ZK__) && !__thumb__) \
+  || __ARM_ARCH_7A__ || __ARM_ARCH_7R__ || __ARM_ARCH >= 7
+ 
+ static inline uintptr_t __get_tp()
+diff -ruN musl-orig/src/internal/syscall.h musl-1.2.6/src/internal/syscall.h
+--- musl-orig/src/internal/syscall.h	2026-03-20 10:40:00.000000000 -0500
++++ musl-1.2.6/src/internal/syscall.h	2026-11-22 11:52:40.459949430 -0600
+@@ -241,6 +241,33 @@
+ #define SYS_settimeofday SYS_settimeofday_time32
+ #endif
+ 
++#if defined(__arm__) && __ARM_ARCH_PROFILE == 'M'
++/* Native RP2350 Linux is built without COMPAT_32BIT_TIME: only the time64
++ * system calls exist. As on time64-only archs, the plain names become the
++ * time64 ones (below), so nothing tries a time32 call first and gives up
++ * on its ENOSYS (nanosleep, select, futex, ...). */
++#undef SYS_clock_gettime
++#undef SYS_clock_settime
++#undef SYS_clock_adjtime
++#undef SYS_clock_getres
++#undef SYS_clock_nanosleep
++#undef SYS_timer_gettime
++#undef SYS_timer_settime
++#undef SYS_timerfd_gettime
++#undef SYS_timerfd_settime
++#undef SYS_utimensat
++#undef SYS_pselect6
++#undef SYS_ppoll
++#undef SYS_recvmmsg
++#undef SYS_mq_timedsend
++#undef SYS_mq_timedreceive
++#undef SYS_rt_sigtimedwait
++#undef SYS_futex
++#undef SYS_sched_rr_get_interval
++#undef SYS_semtimedop
++#define SYS_semtimedop SYS_semtimedop_time64
++#endif
++
+ /* Ensure that the plain syscall names are defined even for "time64-only"
+  * archs. These facilitate callers passing null time arguments, and make
+  * tests for establishing which to use/fallback-to more consistent when
+diff -ruN musl-orig/src/ldso/arm/tlsdesc.S musl-1.2.6/src/ldso/arm/tlsdesc.S
+--- musl-orig/src/ldso/arm/tlsdesc.S	2026-03-20 10:40:00.000000000 -0500
++++ musl-1.2.6/src/ldso/arm/tlsdesc.S	2026-11-22 10:59:24.358481065 -0600
+@@ -17,7 +17,9 @@
+ 	ldr r2,[r1,#4]  // r2 = offset
+ 	ldr r1,[r1]     // r1 = modid
+ 
+-#if ((__ARM_ARCH_6K__ || __ARM_ARCH_6KZ__ || __ARM_ARCH_6ZK__) && !__thumb__) \
++#if __ARM_ARCH_PROFILE == 'M'
++	bl __aeabi_read_tp
++#elif ((__ARM_ARCH_6K__ || __ARM_ARCH_6KZ__ || __ARM_ARCH_6ZK__) && !__thumb__) \
+  || __ARM_ARCH_7A__ || __ARM_ARCH_7R__ || __ARM_ARCH >= 7
+ 	mrc p15,0,r0,c13,c0,3
+ #else
+diff -ruN musl-orig/src/setjmp/arm/longjmp.S musl-1.2.6/src/setjmp/arm/longjmp.S
+--- musl-orig/src/setjmp/arm/longjmp.S	2026-03-20 10:40:00.000000000 -0500
++++ musl-1.2.6/src/setjmp/arm/longjmp.S	2026-11-22 10:59:24.358170938 -0600
+@@ -12,6 +12,9 @@
+ 	ldmia ip!, {r2,lr}
+ 	mov sp,r2
+ 
++#if __ARM_ARCH_PROFILE == 'M'
++	bx lr
++#else
+ 	adr r1,1f
+ 	ldr r2,1f
+ 	ldr r1,[r1,r2]
+@@ -48,3 +51,4 @@
+ .hidden __hwcap
+ .align 2
+ 1:	.word __hwcap-1b
++#endif
+diff -ruN musl-orig/src/setjmp/arm/setjmp.S musl-1.2.6/src/setjmp/arm/setjmp.S
+--- musl-orig/src/setjmp/arm/setjmp.S	2026-03-20 10:40:00.000000000 -0500
++++ musl-1.2.6/src/setjmp/arm/setjmp.S	2026-11-22 10:59:24.358022562 -0600
+@@ -14,6 +14,9 @@
+ 	stmia ip!,{r2,lr}
+ 	mov r0,#0
+ 
++#if __ARM_ARCH_PROFILE == 'M'
++	bx lr
++#else
+ 	adr r1,1f
+ 	ldr r2,1f
+ 	ldr r1,[r1,r2]
+@@ -50,3 +53,4 @@
+ .hidden __hwcap
+ .align 2
+ 1:	.word __hwcap-1b
++#endif
+diff -ruN musl-orig/src/thread/arm/__aeabi_read_tp.S musl-1.2.6/src/thread/arm/__aeabi_read_tp.S
+--- musl-orig/src/thread/arm/__aeabi_read_tp.S	1969-12-31 18:00:00.000000000 -0600
++++ musl-1.2.6/src/thread/arm/__aeabi_read_tp.S	2026-11-22 11:52:40.459479803 -0600
+@@ -0,0 +1,26 @@
++.syntax unified
++.global __aeabi_read_tp
++.type __aeabi_read_tp,%function
++__aeabi_read_tp:
++#if __ARM_ARCH_PROFILE == 'M'
++	/* the ATRANS thread-pointer word if there is one (__set_thread_area.c),
++	 * else the get_tls syscall: r0 = thread pointer, all else kept */
++	ldr r0,=__atrans_tp_word
++	ldr r0,[r0]
++	cbz r0,1f
++	ldr r0,[r0]
++	bx lr
++1:	mov ip,r7
++	movw r7,#6
++	movt r7,#15
++	svc 0
++	mov r7,ip
++	bx lr
++#else
++	ldr r0,1f
++	add r0,r0,pc
++	ldr r0,[r0]
++2:	bx r0
++	.align 2
++1:	.word __a_gettp_ptr - 2b
++#endif
+diff -ruN musl-orig/src/thread/arm/__aeabi_read_tp.s musl-1.2.6/src/thread/arm/__aeabi_read_tp.s
+--- musl-orig/src/thread/arm/__aeabi_read_tp.s	2026-03-20 10:40:00.000000000 -0500
++++ musl-1.2.6/src/thread/arm/__aeabi_read_tp.s	1969-12-31 18:00:00.000000000 -0600
+@@ -1,10 +0,0 @@
+-.syntax unified
+-.global __aeabi_read_tp
+-.type __aeabi_read_tp,%function
+-__aeabi_read_tp:
+-	ldr r0,1f
+-	add r0,r0,pc
+-	ldr r0,[r0]
+-2:	bx r0
+-	.align 2
+-1:	.word __a_gettp_ptr - 2b
+diff -ruN musl-orig/src/thread/arm/__set_thread_area.c musl-1.2.6/src/thread/arm/__set_thread_area.c
+--- musl-orig/src/thread/arm/__set_thread_area.c	2026-03-20 10:40:00.000000000 -0500
++++ musl-1.2.6/src/thread/arm/__set_thread_area.c	2026-11-22 11:52:40.459330844 -0600
+@@ -24,6 +24,33 @@
+ 
+ extern hidden uintptr_t __a_barrier_ptr, __a_cas_ptr, __a_gettp_ptr;
+ 
++#if __ARM_ARCH_PROFILE == 'M'
++/* ATRANS v2 (native RP2350 Linux): the kernel stores the running thread's
++ * TLS pointer in the word at the bottom of the per-process window,
++ * 0x11000000, which user mode may read but not write, and rewrites it on
++ * set_tls and on every switch. It is used when this process has the ATRANS
++ * layout (the stack inside the window, below the program headers) and the
++ * word holds the pointer just set; elsewhere (qemu-user, other kernels)
++ * __get_tp makes the get_tls syscall. */
++#define ATRANS_WINDOW 0x11000000UL
++#define ATRANS_END 0x11400000UL
++hidden const uintptr_t *__atrans_tp_word;
++
++int __set_thread_area(void *p)
++{
++	volatile char here;
++	uintptr_t sp = (uintptr_t)&here, phdr = 0;
++	size_t *aux;
++	int r = __syscall(0xf0005, p);
++
++	for (aux = libc.auxv; aux && *aux; aux += 2)
++		if (*aux == AT_PHDR) phdr = aux[1];
++	if (!r && sp > ATRANS_WINDOW + 32 && sp < phdr && phdr < ATRANS_END
++	    && *(volatile uintptr_t *)ATRANS_WINDOW == (uintptr_t)p)
++		__atrans_tp_word = (const uintptr_t *)ATRANS_WINDOW;
++	return r;
++}
++#else
+ int __set_thread_area(void *p)
+ {
+ #if !__ARM_ARCH_7A__ && !__ARM_ARCH_7R__ && __ARM_ARCH < 7
+@@ -50,3 +77,4 @@
+ #endif
+ 	return __syscall(0xf0005, p);
+ }
++#endif
+diff -ruN musl-orig/src/thread/arm/atomics.S musl-1.2.6/src/thread/arm/atomics.S
+--- musl-orig/src/thread/arm/atomics.S	1969-12-31 18:00:00.000000000 -0600
++++ musl-1.2.6/src/thread/arm/atomics.S	2026-11-22 11:00:06.997517945 -0600
+@@ -0,0 +1,116 @@
++.syntax unified
++.text
++
++.global __a_barrier_dummy
++.hidden __a_barrier_dummy
++.type __a_barrier_dummy,%function
++__a_barrier_dummy:
++	bx lr
++
++#if __ARM_ARCH_PROFILE != 'M'
++.global __a_barrier_oldkuser
++.hidden __a_barrier_oldkuser
++.type __a_barrier_oldkuser,%function
++__a_barrier_oldkuser:
++	push {r0,r1,r2,r3,ip,lr}
++	mov r1,r0
++	mov r2,sp
++	ldr ip,=0xffff0fc0
++	bl 1f
++	pop {r0,r1,r2,r3,ip,lr}
++	bx lr
++1:	bx ip
++
++.global __a_barrier_v6
++.hidden __a_barrier_v6
++.type __a_barrier_v6,%function
++__a_barrier_v6:
++	.arch armv6t2
++	mcr p15,0,r0,c7,c10,5
++	bx lr
++
++.global __a_barrier_v7
++.hidden __a_barrier_v7
++.type __a_barrier_v7,%function
++__a_barrier_v7:
++	.arch armv7-a
++	dmb ish
++	bx lr
++
++#endif
++
++.global __a_cas_dummy
++.hidden __a_cas_dummy
++.type __a_cas_dummy,%function
++__a_cas_dummy:
++	mov r3,r0
++	ldr r0,[r2]
++	subs r0,r3,r0
++	streq r1,[r2]
++	bx lr
++
++#if __ARM_ARCH_PROFILE != 'M'
++.global __a_cas_v6
++.hidden __a_cas_v6
++.type __a_cas_v6,%function
++__a_cas_v6:
++	.arch armv6t2
++	mov r3,r0
++	mcr p15,0,r0,c7,c10,5
++1:	ldrex r0,[r2]
++	subs r0,r3,r0
++	strexeq r0,r1,[r2]
++	teqeq r0,#1
++	beq 1b
++	mcr p15,0,r0,c7,c10,5
++	bx lr
++
++.global __a_cas_v7
++.hidden __a_cas_v7
++.type __a_cas_v7,%function
++__a_cas_v7:
++	.arch armv7-a
++	mov r3,r0
++	dmb ish
++1:	ldrex r0,[r2]
++	subs r0,r3,r0
++	strexeq r0,r1,[r2]
++	teqeq r0,#1
++	beq 1b
++	dmb ish
++	bx lr
++
++.global __a_gettp_cp15
++.hidden __a_gettp_cp15
++.type __a_gettp_cp15,%function
++__a_gettp_cp15:
++	mrc p15,0,r0,c13,c0,3
++	bx lr
++
++#endif
++
++/* Tag this file with minimum ISA level so as not to affect linking. */
++.object_arch armv4t
++.eabi_attribute 6,2
++
++.data
++.align 2
++
++.global __a_barrier_ptr
++.hidden __a_barrier_ptr
++__a_barrier_ptr:
++	.word __a_barrier_dummy
++
++.global __a_cas_ptr
++.hidden __a_cas_ptr
++__a_cas_ptr:
++	.word __a_cas_dummy
++
++.global __a_gettp_ptr
++.hidden __a_gettp_ptr
++__a_gettp_ptr:
++#if __ARM_ARCH_PROFILE == 'M'
++	.word __aeabi_read_tp
++#else
++	.word __a_gettp_cp15
++#endif
+diff -ruN musl-orig/src/thread/arm/atomics.s musl-1.2.6/src/thread/arm/atomics.s
+--- musl-orig/src/thread/arm/atomics.s	2026-03-20 10:40:00.000000000 -0500
++++ musl-1.2.6/src/thread/arm/atomics.s	1969-12-31 18:00:00.000000000 -0600
+@@ -1,106 +0,0 @@
+-.syntax unified
+-.text
+-
+-.global __a_barrier_dummy
+-.hidden __a_barrier_dummy
+-.type __a_barrier_dummy,%function
+-__a_barrier_dummy:
+-	bx lr
+-
+-.global __a_barrier_oldkuser
+-.hidden __a_barrier_oldkuser
+-.type __a_barrier_oldkuser,%function
+-__a_barrier_oldkuser:
+-	push {r0,r1,r2,r3,ip,lr}
+-	mov r1,r0
+-	mov r2,sp
+-	ldr ip,=0xffff0fc0
+-	bl 1f
+-	pop {r0,r1,r2,r3,ip,lr}
+-	bx lr
+-1:	bx ip
+-
+-.global __a_barrier_v6
+-.hidden __a_barrier_v6
+-.type __a_barrier_v6,%function
+-__a_barrier_v6:
+-	.arch armv6t2
+-	mcr p15,0,r0,c7,c10,5
+-	bx lr
+-
+-.global __a_barrier_v7
+-.hidden __a_barrier_v7
+-.type __a_barrier_v7,%function
+-__a_barrier_v7:
+-	.arch armv7-a
+-	dmb ish
+-	bx lr
+-
+-.global __a_cas_dummy
+-.hidden __a_cas_dummy
+-.type __a_cas_dummy,%function
+-__a_cas_dummy:
+-	mov r3,r0
+-	ldr r0,[r2]
+-	subs r0,r3,r0
+-	streq r1,[r2]
+-	bx lr
+-
+-.global __a_cas_v6
+-.hidden __a_cas_v6
+-.type __a_cas_v6,%function
+-__a_cas_v6:
+-	.arch armv6t2
+-	mov r3,r0
+-	mcr p15,0,r0,c7,c10,5
+-1:	ldrex r0,[r2]
+-	subs r0,r3,r0
+-	strexeq r0,r1,[r2]
+-	teqeq r0,#1
+-	beq 1b
+-	mcr p15,0,r0,c7,c10,5
+-	bx lr
+-
+-.global __a_cas_v7
+-.hidden __a_cas_v7
+-.type __a_cas_v7,%function
+-__a_cas_v7:
+-	.arch armv7-a
+-	mov r3,r0
+-	dmb ish
+-1:	ldrex r0,[r2]
+-	subs r0,r3,r0
+-	strexeq r0,r1,[r2]
+-	teqeq r0,#1
+-	beq 1b
+-	dmb ish
+-	bx lr
+-
+-.global __a_gettp_cp15
+-.hidden __a_gettp_cp15
+-.type __a_gettp_cp15,%function
+-__a_gettp_cp15:
+-	mrc p15,0,r0,c13,c0,3
+-	bx lr
+-
+-/* Tag this file with minimum ISA level so as not to affect linking. */
+-.object_arch armv4t
+-.eabi_attribute 6,2
+-
+-.data
+-.align 2
+-
+-.global __a_barrier_ptr
+-.hidden __a_barrier_ptr
+-__a_barrier_ptr:
+-	.word __a_barrier_dummy
+-
+-.global __a_cas_ptr
+-.hidden __a_cas_ptr
+-__a_cas_ptr:
+-	.word __a_cas_dummy
+-
+-.global __a_gettp_ptr
+-.hidden __a_gettp_ptr
+-__a_gettp_ptr:
+-	.word __a_gettp_cp15

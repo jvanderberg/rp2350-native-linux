@@ -1,0 +1,19 @@
+[package]
+name = "claude-guest-mcp"
+version = "0.2.0"
+edition = "2024"
+description = "MCP tool server for native RP2350 Linux: no_std, raw Linux syscalls"
+
+[workspace]
+
+[dependencies]
+
+[profile.release]
+opt-level = "z"
+panic = "abort"
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+panic = "abort"

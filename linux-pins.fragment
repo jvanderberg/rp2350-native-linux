@@ -1,0 +1,24 @@
+# The board's pins on core 0 (pins/README.md), on top of
+# linux.fragment: the standard GPIO, I2C, SPI, PWM and IIO interfaces with
+# the drivers in drivers/rp2350.
+CONFIG_GPIOLIB=y
+CONFIG_GPIO_CDEV=y
+# CONFIG_GPIO_CDEV_V1 is not set
+CONFIG_RP2350_GPIO=y
+CONFIG_I2C=y
+CONFIG_I2C_CHARDEV=y
+# CONFIG_I2C_HELPER_AUTO is not set
+CONFIG_RP2350_I2C=y
+CONFIG_SPI=y
+CONFIG_SPI_MASTER=y
+CONFIG_SPI_SPIDEV=y
+CONFIG_RP2350_SPI=y
+CONFIG_PWM=y
+CONFIG_RP2350_PWM=y
+CONFIG_IIO=y
+# CONFIG_IIO_BUFFER is not set
+# CONFIG_IIO_TRIGGER is not set
+CONFIG_RP2350_ADC=y
+CONFIG_RP2350_PIO=y
+# a romfs in flash for testing the pins userland (PINS_TESTFS, mtd-rom)
+CONFIG_MTD_ROM=y

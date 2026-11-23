@@ -1,0 +1,32 @@
+From 5cda1f8d2a57ee312e3c15a7190ae8c3f5c9fe52 Mon Sep 17 00:00:00 2001
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Date: Sun, 22 Nov 2026 11:47:13 -0600
+Subject: [PATCH] tccdbg: a $t mapping symbol for armv7m (Thumb) with -g
+
+With -g tcc puts a mapping symbol at the start of each file's code; for Thumb code it must be $t, not $a, or tools (and the ATRANS contract check) take the code for ARM state.
+---
+ tccdbg.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/tccdbg.c b/tccdbg.c
+index 8bfd35d..ef9b004 100644
+--- a/tccdbg.c
++++ b/tccdbg.c
+@@ -1119,7 +1119,13 @@ ST_FUNC void tcc_debug_start(TCCState *s1)
+            to make them disassemble again when crt1.o had a '$d' before */
+         put_elf_sym(symtab_section, text_section->data_offset, 0,
+             ELFW(ST_INFO)(STB_LOCAL, STT_NOTYPE), 0,
+-            text_section->sh_num, "$a");
++            text_section->sh_num,
++#ifdef TCC_ARM_THUMB
++            "$t"
++#else
++            "$a"
++#endif
++            );
+ 
+         new_file = last_line_num = 0;
+         debug_next_type = N_DEFAULT_DEBUG;
+-- 
+2.50.1 (Apple Git-155)
+

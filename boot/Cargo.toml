@@ -1,0 +1,39 @@
+[package]
+name = "nativeboot"
+version = "0.1.0"
+edition = "2024"
+description = "Boot stub for native nommu Linux on the RP2350's Cortex-M33: core 0 sets up clocks and PSRAM and jumps to the XIP kernel; core 1 is the I/O processor (USB console, Wi-Fi, SD card) and Linux writes flash through its SRAM routine"
+
+[workspace]
+members = ["sdcard"]
+
+[dependencies]
+rp235x-hal = { version = "0.4", features = ["rt", "critical-section-impl", "binary-info"] }
+cortex-m = "0.7"
+usb-device = "0.3"
+usbd-serial = "0.2"
+rtt-target = "0.6"
+panic-rtt-target = "0.2"
+# Wi-Fi (RM2 / CYW43439): the embassy driver, polled without an executor (wifi.rs)
+cyw43 = "0.7.0"
+embassy-net-driver = "0.2"
+embassy-time = "0.5.1"
+embassy-time-driver = "0.2.2"
+embassy-futures = "0.1.2"
+embedded-hal = "1.0"
+pio = "0.3"
+fugit = "0.3"
+# the SD card protocol (sdcard/)
+sdcard = { path = "sdcard" }
+
+[features]
+# core 1's hot code (the SD card path, the USB console, its loop, mem*) runs
+# from SRAM instead of through the XIP cache (core1.x)
+default = ["core1-sram"]
+core1-sram = []
+
+[profile.release]
+opt-level = "s"
+debug = true
+lto = true
+codegen-units = 1

@@ -1,0 +1,7 @@
+[package]
+name = "sdcard"
+version = "0.1.0"
+edition = "2024"
+description = "An SD card over SPI (commands with CRCs, retries, insertion and removal) for the boot stub's core 1"
+
+[dependencies]

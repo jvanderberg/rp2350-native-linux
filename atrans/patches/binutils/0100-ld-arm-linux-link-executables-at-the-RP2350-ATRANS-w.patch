@@ -1,0 +1,17 @@
+ld: arm Linux: link executables at the RP2350 ATRANS window by default
+
+ATRANS programs on native RP2350 Linux are static ELFs whose segments lie in
+[0x11000000, 0x11400000), with the stack below the lowest segment. The
+default is 0x11020000 (128 KiB of stack); -Wl,-Ttext-segment=ADDR overrides.
+
+--- a/ld/emulparams/armelf_linux.sh
++++ b/ld/emulparams/armelf_linux.sh
+@@ -21,7 +21,7 @@
+ OTHER_END_SYMBOLS="${CREATE_SHLIB+PROVIDE (}__end__ = .${CREATE_SHLIB+)};"
+ OTHER_SECTIONS='.note.gnu.arm.ident 0 : { KEEP (*(.note.gnu.arm.ident)) }'
+ 
+-TEXT_START_ADDR=0x00010000
++TEXT_START_ADDR=0x11020000
+ TARGET2_TYPE=got-rel
+ 
+ # ARM does not support .s* sections.
