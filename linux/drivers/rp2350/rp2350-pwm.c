@@ -7,8 +7,9 @@
  * slice's period can't change while another of its pins is running, and
  * two pins on the same slice channel (GP0 and GP16, say) share its duty.
  *
- * Enabling a channel gives the pin to the PWM (FUNCSEL 4); disabling it
- * makes the pin a SIO input again. Pins gpiolib doesn't hand out (the
+ * Enabling a channel gives the pin to the PWM (FUNCSEL 4), and the GPIO
+ * driver refuses it while it is enabled; disabling it makes the pin a SIO
+ * input again. Pins gpiolib doesn't hand out (the
  * board's, the ADC's) and pins a PIO block has are refused.
  */
 #include <linux/io.h>
