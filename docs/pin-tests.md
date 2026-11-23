@@ -29,6 +29,11 @@ write's first byte sets the register pointer and the rest are stored from
 there, and a read returns bytes from the pointer. Opening the port at 1200
 baud and closing it also reboots into BOOTSEL.
 
+A board running debugprobe ignores `picotool reboot -f -u` and the
+1200-baud reboot, so put it in BOOTSEL by hand the first time (hold
+BOOTSEL while plugging it in). Once it runs the tester, its `bootsel`
+command does it.
+
 ```sh
 cd tools/pintester && cargo build --release
 picotool load --ser SERIAL -v -x -t elf target/riscv32imac-unknown-none-elf/release/pintester
@@ -75,12 +80,12 @@ $ tools/pin-test.py [--host ADDR] [--only NAME,...]
 | `gpio` | GP13 driven 1/0/1/0 with `gpioset`, read by the tester; GP14 driven by the tester, read with `gpioget` |
 | `pull` | GP3's pull-up (`gpiomon -b pull-up`) raises the line once the tester lets go of it |
 | `edges` | GP14 edge events through the GPIO v2 uAPI: all 40 at 20 ms and all 100 at 5 ms, rising and falling in turn. 200 at 2 ms and at 1 ms, and GP13 toggled every 25 ms, are reported only (`INFO`). |
-| `pwm` | GP15 by sysfs at 1 kHz 25%, 10 kHz 50%, 100 Hz 75% and 1 MHz 50%, measured within 1% and 2 points of duty; then off |
+| `pwm` | GP15 by sysfs at 1 kHz 25%, 10 kHz 50%, 100 Hz 75% and 1 MHz 50%, measured within 1% and 2 points of duty (at 1 MHz the frequency only: the tester samples at about 3.8 MHz); then off |
 | `i2c` | `i2cdetect` finds 0x42; `i2cset`/`i2cget` bytes and words; `i2ctransfer` with a repeated start; an absent address fails; MicroPython `I2C` |
 | `spi` | SPI0 loopback in modes 0-3, at 100 kHz to 50 MHz, 1 to 4096 bytes; MicroPython `SPI` at 10 MHz |
 | `micropython` | `Pin` output, `Pin.irq` catching 20 edges at 20 ms, `PWM` at 2 kHz 25% |
 | `pio-self` | `pins/tests/pio` on the board, with no wiring of its own (it uses free pins GP15, GP20, GP21, GP31, GP33): libpio and MicroPython `rp2` at GPIOBASE 0 and 16, read back by the other block or driven from Linux, `WAIT GPIO`'s index, outputs reset between programs, the driver's refusals, and DMA (echo, a stop ending a wait, starts racing stops) |
-| `pio` | builds the PIO examples on the board (tcc and `pioasm`); `squarewave` on GP13 at 1 kHz, 100 kHz and 1 MHz, within 1% and 50 ± 3% duty; `ws2812` sends 240 bits for 10 LEDs; `pio-edges` catches all of 200 edges at 1 ms and of 2000 at 20 µs and at 5 µs on GP14, with the right mean spacing; `pio-fifo`; `pio-dma` (echo and ring); MicroPython `pio_blink.py` at 23.7 Hz, `pio_echo.py`, `pio_ring.py` |
+| `pio` | builds the PIO examples on the board (tcc and `pioasm`); `squarewave` on GP13 at 1 kHz, 100 kHz and 1 MHz, within 1% and 50 ± 3% duty (at 1 MHz the frequency only); `ws2812` sends 240 bits for 10 LEDs; `pio-edges` catches all of 200 edges at 1 ms and of 2000 at 20 µs and at 5 µs on GP14, with the right mean spacing; `pio-fifo`; `pio-dma` (echo and ring); MicroPython `pio_blink.py` at 23.7 Hz, `pio_echo.py`, `pio_ring.py` |
 
 Pull-downs aren't tested: on the RP2350 a line that has been high stays near
 2 V against the internal pull-down (erratum RP2350-E9).

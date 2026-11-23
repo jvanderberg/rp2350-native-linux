@@ -823,10 +823,22 @@ class DMA:
     def _buffer(self, nbytes):
         b = self._b
         if b.dma is None:
+            # the block's one DMA buffer, which the regions come from: 64 KiB
+            # of contiguous kernel memory, or half as much while that isn't
+            # there (memory a long-running board has fragmented), down to
+            # what this transfer needs
             n = bytearray(4)
-            struct.pack_into("<I", n, 0, _DMA_MAX_BUF)
-            fcntl.ioctl(b.fd, _IOC_DMA_ALLOC, n)
-            b.dma = (_rp2350mem.mmap(b.fd, _DMA_MAX_BUF, _DMA_BUF_OFFSET), _DMA_MAX_BUF)
+            size = _DMA_MAX_BUF
+            while True:
+                struct.pack_into("<I", n, 0, size)
+                try:
+                    fcntl.ioctl(b.fd, _IOC_DMA_ALLOC, n)
+                    break
+                except OSError as e:
+                    if e.args[0] != 12 or size // 2 < max(nbytes, 4096):
+                        raise
+                    size //= 2
+            b.dma = (_rp2350mem.mmap(b.fd, size, _DMA_BUF_OFFSET), size)
         if self._region and self._region[1] >= nbytes:
             return self._region[0]
         self._free_region()

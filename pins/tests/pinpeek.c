@@ -8,15 +8,42 @@
  *   pinpeek regs PIN        IO_BANK0 CTRL (FUNCSEL), the pad, SIO in/out/oe
  *   pinpeek meas PIN MS [HZ DUTY]
  *                           samples the pad's level for MS ms: edges,
- *                           frequency and duty (good to a few hundred kHz);
+ *                           frequency and duty (the duty to about 10 kHz:
+ *                           above that, reading the clock at each edge
+ *                           takes a visible part of the period);
  *                           with HZ and DUTY (%), exits 1 unless within 1%
  *                           and 2.5 points of them
+ *
+ * meas is a process: while it doesn't have the CPU (another process, a
+ * switch) it misses edges. So it times each period it sees (rise to rise)
+ * and its high time, and drops the periods more than 2% (or 2 us, the
+ * clock's steps) off their median (a gap in them). The frequency is the
+ * mean of the rest, which averages out the clock's 1 us steps; the duty
+ * the median of their high fractions, which a stall between an edge and
+ * its timestamp doesn't move.
  */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#define MAXP 4096	/* periods kept */
+static float per_s[MAXP], per_high[MAXP], sorted[MAXP];
+
+static int cmp_float(const void *a, const void *b)
+{
+	float x = *(const float *)a, y = *(const float *)b;
+
+	return x < y ? -1 : x > y;
+}
+
+static double median(const float *v, unsigned n)
+{
+	memcpy(sorted, v, n * sizeof(*v));
+	qsort(sorted, n, sizeof(*v), cmp_float);
+	return n % 2 ? sorted[n / 2] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0;
+}
 
 #define REG(a) (*(volatile uint32_t *)(uintptr_t)(a))
 #define IO_CTRL(n) REG(0x40028000 + 8 * (n) + 4)
@@ -61,6 +88,8 @@ int main(int argc, char **argv)
 	if (!strcmp(argv[1], "meas") && argc > 3) {
 		double ms = atof(argv[3]), t0 = now(), end = t0 + ms / 1000, t, first = 0, last = 0;
 		unsigned long rises = 0, falls = 0, samples = 0, high = 0;
+		unsigned np = 0;
+		double hi = -1;	/* the current period's high time (rise to fall) */
 		int prev = !!(SIO_IN(n) & b), v;
 
 		do {
@@ -72,11 +101,22 @@ int main(int argc, char **argv)
 					if (v) {
 						rises++;
 						t = now();
-						if (!first)
+						if (!first) {
 							first = t;
+						} else if (np < MAXP && hi >= 0 && t > last) {
+							/* the period that ended here; its edges
+							 * timed alike, so the delay to see one
+							 * cancels out */
+							per_s[np] = t - last;
+							per_high[np] = hi;
+							np++;
+						}
 						last = t;
+						hi = -1;
 					} else {
 						falls++;
+						if (first)
+							hi = now() - last;
 					}
 					prev = v;
 				}
@@ -84,6 +124,21 @@ int main(int argc, char **argv)
 		} while (now() < end);
 		double hz = rises > 1 ? (rises - 1) / (last - first) : 0.0;
 		double duty = samples ? 100.0 * high / samples : 0.0;
+
+		if (np >= 3) {
+			double m = median(per_s, np), sp = 0;
+			double tol = m * 0.02 > 2e-6 ? m * 0.02 : 2e-6;
+			unsigned kept = 0;
+
+			for (unsigned i = 0; i < np; i++) {
+				if (per_s[i] < m - tol || per_s[i] > m + tol)
+					continue;
+				sp += per_s[i];
+				per_high[kept++] = per_high[i] / per_s[i];	/* now a fraction */
+			}
+			hz = kept / sp;
+			duty = 100.0 * median(per_high, kept);
+		}
 
 		printf("GP%u: rises=%lu falls=%lu hz=%.1f duty=%.1f samples=%lu\n", n, rises, falls,
 		       hz, duty, samples);

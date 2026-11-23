@@ -53,6 +53,10 @@ static void __iomem *sio(unsigned int n, unsigned int reg)
 
 static int rg_request(struct gpio_chip *gc, unsigned int n)
 {
+	/* an enabled PWM channel has the pin (rp2350-pwm.c): taking it here
+	 * would leave the channel enabled with its pin on SIO */
+	if (rp2350_pin_get_func(n) == RP_FUNC_PWM)
+		return -EBUSY;
 	rp2350_pad_digital(n);
 	rp2350_pin_func(n, RP_FUNC_SIO);
 	return 0;
