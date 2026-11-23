@@ -58,10 +58,15 @@ kernel() {
   # SRAM below 0x20068000 (the I/O area shared with core 1, then the boot
   # stub's RAM at 0x2006C000) that the kernel image leaves free becomes the
   # sram-text MTD device (tests/sramload.c)
-  local sram=0x20000000
+  # (after the kernel's own SRAM: its data with SRAM_DATA, its hot code with
+  # HOT_TEXT)
+  local sram=0x20000000 end=
   if grep -q '^CONFIG_RP2350_SRAM_DATA=y' .config; then
-    sram=$(printf '0x%x' $(( (0x$(awk '$3 == "_end" {print $1}' System.map) + 0xfff) & ~0xfff )))
+    end=$(awk '$3 == "_end" {print $1}' System.map)
+  elif grep -q '^CONFIG_RP2350_HOT_TEXT=y' .config; then
+    end=$(awk '$3 == "__sram_text_end" {print $1}' System.map)
   fi
+  [[ -z $end ]] || sram=$(printf '0x%x' $(( (0x$end + 0xfff) & ~0xfff )))
   ${CROSS}cpp -nostdinc -I include -undef -x assembler-with-cpp \
     -DSRAM_TEXT_BASE=$sram -DSRAM_TEXT_SIZE=$(printf '0x%x' $((0x20068000 - sram))) \
     ${PINS_TESTFS:+-DPINS_TESTFS} \

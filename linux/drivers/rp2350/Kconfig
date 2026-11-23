@@ -69,6 +69,27 @@ config RP2350_SRAM_DATA
 	  SRAM user must stay clear of [0x20000000, _end). An experiment: PSRAM
 	  goes through the 16 KiB XIP cache, SRAM does not.
 
+config RP2350_HOT_TEXT
+	bool "The kernel's hot code in SRAM, and first in flash"
+	depends on ARCH_RP2350 && XIP_KERNEL && !RP2350_SRAM_DATA
+	help
+	  Build with -ffunction-sections and link the functions listed in
+	  arch/arm/mach-rp2350/sram-text.lds.inc at 0x20000000, copied there
+	  from flash at boot, and those in hot-text.lds.inc at the start of
+	  .text, next to each other. tools/hot-text.py writes the lists from
+	  /proc/pcsample profiles. The kernel runs from flash through the
+	  16 KiB XIP cache, and these few KiB are most of its time.
+
+config RP2350_PCSAMPLE
+	bool "/proc/pcsample: a sampling profiler (NMI)"
+	depends on ARCH_RP2350
+	help
+	  TIMER0's ALARM1, routed to the NMI, samples the interrupted PC (and
+	  current's pid) every PERIOD microseconds, interrupts-off code
+	  included. "echo PERIOD > /proc/pcsample" starts it, "echo 0" stops
+	  it, and reading the file gives the samples; pcsample=PERIOD on the
+	  command line starts it at boot. For tools/hot-text.py.
+
 # The board's pins on core 0 (pins/README.md), with the standard Linux
 # interfaces (gpiochip, i2c-dev, spidev, pwm, iio) and /dev/pioN.
 config RP2350_GPIO

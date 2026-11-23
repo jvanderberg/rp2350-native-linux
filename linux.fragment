@@ -70,3 +70,6 @@ CONFIG_RP2350_MEMSTAT=y
 # Whole-process swapping of ATRANS processes (rp2350-atrans-swap.c,
 # docs/atrans-swap.md): needs CONFIG_BLOCK (linux-devices.fragment)
 CONFIG_RP2350_ATRANS_SWAP=y
+# The kernel's hot code in SRAM and first in flash (tools/hot-text.py,
+# docs/performance.md)
+CONFIG_RP2350_HOT_TEXT=y

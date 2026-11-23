@@ -47,6 +47,8 @@ module_param(readonly, bool, 0444);
 MODULE_PARM_DESC(readonly, "never erase or program flash");
 
 /* one routine and one page buffer for every region */
+#define EPPB_NMI_MASK0	((void __iomem *)0xe0080000)	/* IRQs routed to the NMI */
+
 static DEFINE_MUTEX(rpfl_lock);
 
 typedef int (*rpfl_entry_t)(u32 op, u32 addr, u32 len);
@@ -63,8 +65,16 @@ static int rpfl_call(struct rpfl *f, u32 op, u32 addr)
 {
 	unsigned long flags;
 	int ret;
+#ifdef CONFIG_RP2350_PCSAMPLE
+	u32 nmi;
+#endif
 
 	local_irq_save(flags);
+#ifdef CONFIG_RP2350_PCSAMPLE
+	/* pcsample's NMI would fetch its vector and code with XIP stopped */
+	nmi = readl_relaxed(EPPB_NMI_MASK0);
+	writel_relaxed(0, EPPB_NMI_MASK0);
+#endif
 #if IS_ENABLED(CONFIG_RP2350_PIO)
 	{
 		/* a running PIO DMA channel would fault on PSRAM with XIP stopped */
@@ -75,6 +85,9 @@ static int rpfl_call(struct rpfl *f, u32 op, u32 addr)
 	}
 #else
 	ret = f->entry(op, addr, 0);
+#endif
+#ifdef CONFIG_RP2350_PCSAMPLE
+	writel_relaxed(nmi, EPPB_NMI_MASK0);
 #endif
 	local_irq_restore(flags);
 	return ret;

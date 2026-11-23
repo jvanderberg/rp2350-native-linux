@@ -163,7 +163,7 @@ The kernel mounts the squashfs (`root=/dev/mtdblock1`) and runs
    `/etc/xiprom.list` over its path. With a stale or missing romfs the
    files in the squashfs are used.
 3. Copies busybox into `sram-text` (`sramload`), mounts it at `/sram` and
-   binds it over `/bin/busybox` ([memory.md](memory.md)).
+   binds it over `/bin/busybox`, if it fits ([memory.md](memory.md)).
 4. Mounts `/home`, but only if the flash region already holds jffs2 (it
    looks for a node's magic). It never formats or erases it; without jffs2,
    `/home` is in RAM.

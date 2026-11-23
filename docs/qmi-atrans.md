@@ -113,9 +113,10 @@ Bare metal, maintenance code in SRAM, at 348 MHz:
 
 At most about 16 KiB is ever dirty (writing 32 KiB through the cache evicts
 half of it first), so 343 µs is the worst case for the maintenance itself.
-The invalidate also drops the kernel's flash text and data, so the real cost
-of a switch includes refilling both the kernel's and the process's working
-sets: about 520 µs in all under Linux ([atrans.md](atrans.md)).
+The invalidate also drops the kernel's data and whatever kernel code runs
+from flash, so the real cost of a switch includes refilling both the
+kernel's and the process's working sets: about 180 µs in all under Linux,
+with the kernel's hot code in SRAM ([atrans.md](atrans.md)).
 
 ## Copy bandwidth
 

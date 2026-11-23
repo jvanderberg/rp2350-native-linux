@@ -229,10 +229,10 @@ in use: about 5 ms for a small process, and about 60 ms with 1 MiB of heap.
   stale or empty window and the kernel's store of the exception frame on the
   user stack faults with interrupts off.
 - **Cost:** about 130 µs of flush and ATRANS write per switch. Refilling the
-  16 KiB XIP cache, which serves kernel text and kernel data too, brings a
-  whole switch to about 520 µs: a pipe round trip between two ATRANS
-  processes (two switches) takes about 1.04 ms, against 0.46 ms between two
-  FDPIC processes.
+  16 KiB XIP cache, which serves the kernel's data and the kernel code
+  outside SRAM too, brings a whole switch to about 180 µs: a pipe round trip
+  between two ATRANS processes (two switches) takes about 0.35 ms, against
+  0.10 ms between two FDPIC processes.
 - **Cache invariant:** lines tagged with window addresses only ever belong to
   the loaded block. So an unloaded block can be read and written through the
   uncached untranslated alias (0x1d000000 + device offset).
