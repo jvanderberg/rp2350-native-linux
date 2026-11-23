@@ -251,6 +251,7 @@ On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
 | `build-all.sh`, `run-build.sh`, `build.sh` | The build: everything in order; the native Buildroot and the kernel (in Docker) |
 | `load.sh` | Loads the images onto the board over USB BOOTSEL |
 | `buildroot.defconfig`, `busybox.fragment`, `post-build.sh`, `post-build-devices.sh` | The native userland: Cortex-M4 code (ARMv7-M, which the M33 runs), soft-float, uClibc-ng, FDPIC, busybox; the root filesystem's scripts, services and the hook that copies in the `out/*-root/` trees |
+| `patches/` | Fixes to Buildroot's packages for the native userland (`BR2_GLOBAL_PATCH_DIR`): uClibc-ng's own calls to `__aeabi_read_tp` bind locally, so FDPIC threads work |
 | `mkxiprom.py`, `xiprom.list` | The xip romfs: files run in place from flash |
 | `linux.fragment`, `linux-devices.fragment`, `linux-pins.fragment`, `linux-sram-data.fragment` | Kernel configuration, merged on top of tinyconfig |
 | `rp2350.dts`, `rp2350-pins.dtsi` | The device tree |

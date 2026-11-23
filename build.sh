@@ -26,6 +26,17 @@ rootfs() {
   mkdir -p $BR
   cp /native/buildroot.defconfig $BR/defconfig
   make -C /src/buildroot O=$BR BR2_DEFCONFIG=$BR/defconfig defconfig
+  # Buildroot patches a package once, when it extracts it: a package whose
+  # patches/<package>/ changed since this tree built it is extracted again
+  local d pkg sum
+  for d in /native/patches/*/; do
+    pkg=$(basename "$d")
+    sum=$(cat "$d"* | sha256sum | cut -d' ' -f1)
+    if [[ "$(cat $BR/.patches-$pkg.sum 2>/dev/null)" != "$sum" ]]; then
+      make -C $BR $pkg-dirclean
+      echo "$sum" > $BR/.patches-$pkg.sum
+    fi
+  done
   make -C $BR -j"$JOBS"
   cp $BR/images/rootfs.cpio /out/
   cp $BR/images/rootfs.squashfs /out/
