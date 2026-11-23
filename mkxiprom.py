@@ -23,7 +23,7 @@ entry), size, checksum (the header and its name sum to 0), name padded to
 An ELF file is cut after its last PT_LOAD segment, as tests/sramload.c
 does: section headers and symbols are not needed to run it (an unstripped
 libuClibc carries 190 KiB of them). Seen through the bind mount, such a
-file is the runnable part of the one in the squashfs (/rom has it whole).
+file is the runnable part of the one in the squashfs.
 """
 import hashlib
 import os

@@ -3,7 +3,9 @@
 # copy in the squashfs. Without this, nommu copies the text of every
 # program and shared library from the squashfs into RAM (MmapCopy), in
 # one physically contiguous piece.
-# the C library and the dynamic linker, used by every FDPIC program
+# the C library and the dynamic linker, used by every FDPIC program; first,
+# since overlay-init binds in this order and its later commands then run
+# entirely in place
 /lib/ld-uClibc-1.0.59.so
 /lib/libuClibc-1.0.59.so
 # MicroPython: 426 KiB of text, which in RAM needs a free 512 KiB block
@@ -13,6 +15,7 @@
 /usr/lib/libgpiotools.so.1.0.0
 /usr/lib/libi2c.so.0.1.1
 /usr/lib/libpio.so
-# busybox: overlay-init puts it in SRAM on top of this; the copy here is
-# what runs if that fails
+# busybox: overlay-init runs its own commands with this copy, then puts it
+# in SRAM on top of it if it fits there; otherwise (with the kernel's hot
+# code in SRAM) this copy keeps running
 /bin/busybox

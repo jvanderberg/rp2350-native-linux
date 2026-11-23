@@ -195,8 +195,8 @@ or when it goes in. A partition with a Linux swap signature (or a file
 - **Boot.** The boot stub sets up the clocks and PSRAM, maps the PSRAM at
   0x11400000 for the kernel, starts core 1, and jumps to the kernel in
   flash. `overlay-init` puts a tmpfs overlay on the read-only squashfs,
-  binds the xip romfs's files in place, copies busybox's text into SRAM, and
-  mounts `/home` ([docs/boot-and-io.md](docs/boot-and-io.md)).
+  binds the xip romfs's files in place, copies busybox's text into SRAM if it
+  fits, and mounts `/home` ([docs/boot-and-io.md](docs/boot-and-io.md)).
 - **Two kinds of program.** ATRANS programs are static binaries linked in
   the window at 0x11000000; each process's data is one PSRAM block, which
   the kernel maps there on every switch. A v3 binary's text sits in a
@@ -234,9 +234,6 @@ On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
   both the kernel and the process refill their working sets: a pipe round
   trip takes about 0.35 ms, against 0.10 ms between FDPIC processes, which
   don't switch windows ([docs/performance.md](docs/performance.md)).
-- **Slow early boot:** `overlay-init` spends about 8 s in its xip romfs
-  step (`dmesg | grep overlay-init:` shows each step), so ssh comes up about
-  25 s after power-on.
 - **One CPU for Linux:** core 1 is the I/O processor, and the ATRANS windows
   and the XIP cache are shared by both cores.
 - **No ptrace.**

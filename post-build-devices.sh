@@ -49,7 +49,7 @@ mkdir -p "$T/overlay" "$T/rom" "$T/home" "$T/mnt/sd" "$T/xip" "$T/sram"
 # /bin/sh and every applet link go to busybox-atrans (the userland build's
 # busybox-atrans.sh: ash, with real fork), and login shells, telnet, SSH and
 # tmux sessions, sh -c and the init scripts all run as ATRANS. The FDPIC
-# busybox (its text in SRAM) keeps PID 1 (/sbin/overlay-init, init) and the
+# busybox (its text run in place) keeps PID 1 (/sbin/overlay-init, init) and the
 # small fixed daemons below. Real programs (less, clear from the userland
 # build) are left as they are.
 if [ -x "$T/usr/bin/busybox-atrans" ]; then
@@ -82,15 +82,25 @@ export PATH=/sbin:/usr/sbin:/bin:/usr/bin
 # boot markers in the kernel log, timestamped there (echo is a builtin)
 mark() { echo "overlay-init: $1" > /dev/kmsg; }
 mark start
+# Every exec here costs the text it loads. /bin/mount and the other applet
+# links are busybox-atrans, whose 470 KiB of text would come out of the
+# squashfs at each exec (nothing keeps it loaded yet), so the commands go to
+# the FDPIC busybox, $bb: the squashfs copy until the xip romfs is mounted,
+# then the romfs's copy, run in place. Nor is there any $(...): hush on
+# nommu runs it in a shell re-executed from the squashfs.
+bb=/bin/busybox
+mount() { $bb mount "$@"; }
+umount() { $bb umount "$@"; }
+mkdir() { $bb mkdir "$@"; }
+dd() { $bb dd "$@"; }
+cp() { $bb cp "$@"; }
+rm() { $bb rm "$@"; }
+pivot_root() { $bb pivot_root "$@"; }
+printf() { $bb printf "$@"; }
+grep() { $bb grep "$@"; }
 mount -t proc proc /proc
-mount -t tmpfs -o mode=0755,size=1m tmpfs /overlay
-mkdir /overlay/upper /overlay/work /overlay/root
-mount -t overlay -o lowerdir=/,upperdir=/overlay/upper,workdir=/overlay/work overlay /overlay/root
-cd /overlay/root
-mark "overlay mounted"
 # mtd NAME: sets m to the MTD device named NAME (physmap names its devices
-# after the node: "10200000.xip"), or to "". (A variable, not output:
-# hush on nommu runs $(...) in a re-executed shell, without this function.)
+# after the node: "10200000.xip"), or to "".
 mtd() {
   m=
   while IFS=': ' read -r dev _ _ name; do
@@ -101,21 +111,36 @@ mtd() {
 # The xip romfs in flash (mtd "xip", mkxiprom.py, load.sh): each file it
 # holds is bound over the same path, so shared libraries and big programs
 # run their text in place from flash instead of a copy in RAM. Only if its
-# stamp matches the one built with this squashfs.
+# stamp matches the one built with this squashfs. Bound over the squashfs
+# root first, uClibc's two files first of all, so that the commands from
+# the third one on run entirely in place; then over the overlay below. The
+# romfs's busybox runs them only if the romfs has one (xiprom.list).
 mark "xip romfs"
-mtd xip; x=$m
-if [ -n "$x" ] && mount -t romfs -o ro "$x" xip 2>/dev/null; then
+mtd xip; x=$m; xip=
+if [ -n "$x" ] && mount -t romfs -o ro "$x" /xip 2>/dev/null; then
   a=; b=
-  read -r a < xip/.stamp; read -r b < etc/xiprom.stamp
+  read -r a < /xip/.stamp; read -r b < /etc/xiprom.stamp
   if [ -n "$a" ] && [ "$a" = "$b" ]; then
-    while read -r f; do mount --bind "xip$f" ".$f"; done < etc/xiprom.list
+    xip=1
+    [ -x /xip/bin/busybox ] && bb=/xip/bin/busybox
+    while read -r f; do mount --bind "/xip$f" "$f"; done < /etc/xiprom.list
   else
-    umount xip
+    umount /xip
     echo "overlay-init: the xip romfs doesn't match this root filesystem; not using it"
   fi
 fi
+mount -t tmpfs -o mode=0755,size=1m tmpfs /overlay
+mkdir /overlay/upper /overlay/work /overlay/root
+mount -t overlay -o lowerdir=/,upperdir=/overlay/upper,workdir=/overlay/work overlay /overlay/root
+cd /overlay/root
+if [ -n "$xip" ]; then
+  mount --bind /xip xip
+  while read -r f; do mount --bind "xip$f" ".$f"; done < etc/xiprom.list
+fi
+mark "overlay mounted"
 # busybox's text in SRAM (mtd "sram-text", tests/sramload.c), where every
-# exec from now on, init's included, runs it in place
+# exec from now on, init's included, runs it in place; if it doesn't fit
+# (with the kernel's hot code in SRAM), the romfs copy bound above runs
 mark "sram text"
 mtd sram-text; s=$m
 [ -n "$s" ] && sramload bin/busybox "/dev/$s" >/dev/null &&
@@ -129,13 +154,14 @@ mtd home; home=$m
 [ -n "$home" ] && home=/dev/$home
 ok=0
 if [ -n "$home" ] && [ -e "$home" ]; then
-  magic=$(printf '\205\031')
+  printf '\205\031' > /overlay/magic
   i=0
   while [ $i -lt 64 ]; do
-    m=$(dd if="$home" bs=2 count=1 skip=$((i * 8192)) 2>/dev/null)
-    [ "$m" = "$magic" ] && { ok=1; break; }
+    dd if="$home" of=/overlay/block bs=2 count=1 skip=$((i * 8192)) 2>/dev/null
+    grep -qF -f /overlay/magic /overlay/block && { ok=1; break; }
     i=$((i + 1))
   done
+  rm -f /overlay/magic /overlay/block
   if [ $ok = 1 ]; then
     mount -t jffs2 -o noatime "${home#/dev/}" home || ok=0
   else
@@ -156,7 +182,7 @@ mark "exec init"
 umount /proc
 mount --move /dev dev
 pivot_root . rom
-exec chroot . /sbin/init
+exec /bin/busybox chroot . /sbin/init
 S
 chmod 755 "$T/sbin/overlay-init"
 
