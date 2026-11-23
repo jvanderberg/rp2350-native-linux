@@ -353,7 +353,6 @@ pub fn reboot_to_bootsel() -> ! {
     )
 }
 
-/// Go to BOOTSEL if a debugger asked for it via `BOOTSEL_MAGIC`.
 /// Hold core 1 in reset (PSM FRCE_OFF.PROC1, which `Multicore::spawn`
 /// releases when it starts core 1) and free the SIO spinlocks. A reset of
 /// core 0 alone (a debugger's, or SYSRESETREQ) can leave core 1 running its
@@ -368,6 +367,7 @@ pub fn core1_hold() {
     unsafe { hal::sio::spinlock_reset() };
 }
 
+/// Go to BOOTSEL if a debugger asked for it via `BOOTSEL_MAGIC`.
 pub fn bootsel_if_requested() {
     // SAFETY: watchdog scratch register.
     unsafe {
