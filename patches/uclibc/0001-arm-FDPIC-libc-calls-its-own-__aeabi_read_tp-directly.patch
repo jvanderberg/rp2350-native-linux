@@ -1,0 +1,31 @@
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Subject: [PATCH] arm: FDPIC: libc calls its own __aeabi_read_tp directly
+
+GCC's FDPIC soft thread-pointer call (load_tp_soft) clobbers r9 but
+does not require it to be valid. libc exported __aeabi_read_tp with
+default visibility, so its own calls (NPTL's THREAD_SELF) went through a
+PLT entry, which loads the function descriptor from r9. In
+pthread_create's stack-reuse path the call follows
+_dl_allocate_tls_init in ld.so, r9 still holds ld.so's GOT, and the
+thread creation jumps into ld.so's data (illegal instruction, INVSTATE).
+Make libc's copy protected: still exported, bound locally.
+---
+--- a/ldso/ldso/arm/aeabi_read_tp.S	2026-11-23 15:41:46.109047974 +0000
++++ b/ldso/ldso/arm/aeabi_read_tp.S	2026-11-23 15:41:46.118162381 +0000
+@@ -50,6 +50,16 @@
+ 
+ #ifndef NOT_IN_libc
+ 	.global __aeabi_read_tp
++# ifdef __FDPIC__
++	/* GCC calls this with no valid FDPIC register (r9): its load_tp_soft
++	   pattern clobbers r9 but does not use it, so a call made right after
++	   another library's function returned still has that library's GOT
++	   in r9. Through a PLT entry, which loads the function descriptor
++	   from r9, such a call jumps to garbage. Protected, libc's own calls
++	   (NPTL's THREAD_SELF) bind here directly, with no PLT entry, and
++	   programs still find it exported.  */
++	.protected __aeabi_read_tp
++# endif
+ #else
+ 	.hidden __aeabi_read_tp
+ #endif
