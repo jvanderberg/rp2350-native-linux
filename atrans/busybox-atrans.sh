@@ -15,12 +15,14 @@ CROSS=arm-atrans-linux-musleabi-
 CFG="/src/buildroot/package/busybox/busybox-minimal.config /native/busybox.fragment /native/atrans/busybox-atrans.config"
 # the tarball the native rootfs build downloaded (../run-build.sh rootfs)
 [ -f $SRC ] || { echo "busybox-atrans: $SRC missing; run ./run-build.sh rootfs first" >&2; exit 1; }
-stamp=$(cat $SRC.sha256 2>/dev/null; cat $CFG | sha256sum)
+# Buildroot's busybox patches, then the native userland's (../patches/busybox)
+PATCHES="/src/buildroot/package/busybox/*.patch /native/patches/busybox/*.patch"
+stamp=$(cat $SRC.sha256 2>/dev/null; cat $CFG $PATCHES | sha256sum)
 if [ ! -f $W/busybox ] || [ "$(cat $W/.stamp 2>/dev/null)" != "$stamp" ]; then
   rm -rf $W
   mkdir -p $W
   tar -xjf $SRC -C $W --strip-components=1
-  for p in /src/buildroot/package/busybox/*.patch; do patch -d $W -p1 -s < "$p"; done
+  for p in $PATCHES; do patch -d $W -p1 -s < "$p"; done
   # each file overrides the ones before it: this kconfig ignores a second
   # assignment, so drop a symbol's earlier lines before appending
   : > $W/.config

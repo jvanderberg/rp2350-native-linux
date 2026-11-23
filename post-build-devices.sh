@@ -145,6 +145,10 @@ fi
 if [ $ok = 1 ]; then
   [ -d home/root ] || { mkdir -m 700 home/root && cp -a /root/. home/root/; }
   mount --bind home/root root
+  # ash and hush save their history through <file>.<pid>.new: one killed
+  # while writing it (a reboot, the OOM killer) leaves it behind. No shell
+  # runs yet, so every one left is stale.
+  rm -f home/root/.ash_history.*.new home/root/.hush_history.*.new
 else
   echo "overlay-init: /home is in RAM"
 fi
