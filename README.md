@@ -243,11 +243,6 @@ On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
 - **One CPU for Linux:** core 1 is the I/O processor, and the ATRANS windows
   and the XIP cache are shared by both cores.
 - **No ptrace.**
-- **A crash in `pio-selftest` can wedge the console.** Its last check
-  crashes (a uClibc-ng thread bug: a thread created after another one
-  exited), and console output stops partway through the kernel's message
-  about it. The system keeps running, but the next console write, at the
-  latest during shutdown, hangs the board, and only a reset recovers it.
 
 ## Repository layout
 

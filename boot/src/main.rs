@@ -203,6 +203,7 @@ fn copy_core1_text() {
 
 #[hal::entry]
 fn main() -> ! {
+    board::core1_hold();
     #[cfg(feature = "core1-sram")]
     copy_core1_text();
     board::bootsel_if_requested();

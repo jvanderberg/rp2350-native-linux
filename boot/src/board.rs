@@ -353,6 +353,20 @@ pub fn reboot_to_bootsel() -> ! {
     )
 }
 
+/// Hold core 1 in reset (PSM FRCE_OFF.PROC1, which `Multicore::spawn`
+/// releases when it starts core 1) and free the SIO spinlocks. A reset of
+/// core 0 alone (a debugger's, or SYSRESETREQ) can leave core 1 running its
+/// I/O loop: using the spinlocks, the code in SRAM that `copy_core1_text`
+/// rewrites, and the clocks, pins and QMI this stub sets up again.
+pub fn core1_hold() {
+    // SAFETY: PSM register, before anything else uses the PSM.
+    let psm = unsafe { &*hal::pac::PSM::ptr() };
+    psm.frce_off().modify(|_, w| w.proc1().set_bit());
+    while !psm.frce_off().read().proc1().bit_is_set() {}
+    // SAFETY: core 1 is held in reset, so no spinlock is in use.
+    unsafe { hal::sio::spinlock_reset() };
+}
+
 /// Go to BOOTSEL if a debugger asked for it via `BOOTSEL_MAGIC`.
 pub fn bootsel_if_requested() {
     // SAFETY: watchdog scratch register.
