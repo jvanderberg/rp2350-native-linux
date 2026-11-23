@@ -1,7 +1,7 @@
 # Performance
 
-Measured on the board, with both cores at 348 MHz, the PSRAM at 116 MHz and
-the SD card's bus at 43.5 MHz.
+Measured on the board, with both cores at 348 MHz, the flash and the PSRAM
+at 116 MHz and the SD card's bus at 43.5 MHz.
 
 ## Summary
 
@@ -13,7 +13,7 @@ the SD card's bus at 43.5 MHz.
 | Syscall | 0.84 µs |
 | `fork` + `exit` + `wait`, small ATRANS process | 5 ms |
 | `vfork` + `exec` | 8.3 ms |
-| Context switch between two ATRANS processes | about 650 µs |
+| Context switch between two ATRANS processes | about 520 µs |
 | PSRAM read | 41 MB/s |
 | PSRAM write | 13 MB/s |
 | CRNG seeded (from the hardware TRNG) | 0.6 s after the kernel starts |
@@ -28,7 +28,7 @@ the SD card's bus at 43.5 MHz.
 | Growing the heap by 256 KiB in place | about 20 ms, nearly all of it zeroing the new heap |
 | Growing with a copy (512 KiB to 1 MiB) | about 71 ms |
 | Switch: cache flush and ATRANS write | about 130 µs |
-| Pipe round trip (two switches) | about 1.3 ms, against 0.44 ms between FDPIC processes |
+| Pipe round trip (two switches) | about 1.04 ms, against 0.46 ms between FDPIC processes |
 
 Most of a switch is refilling the 16 KiB XIP cache, which the switch empties
 and which also holds the kernel's text and data
@@ -74,6 +74,23 @@ those barely overlap. About one read block per request waits for a free
 slot (`slot_waits`).
 
 ## Flash
+
+The kernel's text runs from flash, so most XIP cache misses in the kernel
+are flash reads. The boot stub runs the flash's QSPI clock at 116 MHz
+(CLKDIV 3), the PSRAM's clock on the same bus. At 348 MHz, every RXDELAY
+from 2 to 7 reads the flash correctly and 1 does not; the stub uses 4.
+Against 87 MHz (CLKDIV 4), the same kernel, three runs each:
+
+| | 87 MHz | 116 MHz |
+|---|---|---|
+| Pipe round trip, FDPIC | 534–556 µs | 443–492 µs |
+| Pipe round trip, ATRANS | 1248–1263 µs | 1034–1056 µs |
+| 30 × `echo x \| cat` | 0.65 s | 0.58–0.60 s |
+| 2000-iteration `ash` loop | 0.84 s | 0.82 s |
+
+The shell loop barely changes: its text is the ATRANS busybox's, in PSRAM.
+Reads still send the 0xEB command with every access (no continuous-read
+mode).
 
 A 4 KiB erase of `/home` stalls the whole system for about 45 ms, since
 both cores are parked while the boot ROM runs.

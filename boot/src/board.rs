@@ -2,7 +2,7 @@
 //!
 //! - Clocks: 348 MHz at 1.20 V: voltage first, then flash timing that is
 //!   safe at both 150 MHz and 348 MHz, then the PLL (the order PicoMite
-//!   uses).
+//!   uses), then the flash at 116 MHz.
 //! - PSRAM on QMI CS1 = GP0 (AP Memory APS6404L). The sequence follows
 //!   PicoMite/FanPico psram.c (Timo Kokkonen): exit QPI, read ID, reset,
 //!   enter QPI, program M1 timing/format.
@@ -213,10 +213,18 @@ fn psram_qmi_setup(csr_clkdiv: u32, timing: u32) {
 
 /// Flash (M0) timing valid at both 150 and 348 MHz: COOLDOWN=1, RXDELAY=2,
 /// MIN_DESELECT=6, CLKDIV=4 (87 MHz at 348; PicoMite's value above 288 MHz).
+const M0_TIMING_SLOW: u32 = 0x4000_6204;
+/// Flash (M0) timing at 348 MHz: COOLDOWN=1, RXDELAY=4, MIN_DESELECT=6,
+/// CLKDIV=3: 116 MHz, the PSRAM's clock on the same bus. At 348 MHz,
+/// RXDELAY 2 to 7 all read the flash correctly and 1 does not; 4 is the
+/// PSRAM's value too. Kernel text misses are flash reads, so this takes
+/// about 17% off a pipe round trip (docs/performance.md, "Flash").
+const M0_TIMING_FAST: u32 = 0x4000_6403;
+
 #[inline(never)]
 #[unsafe(link_section = ".data.ram_func")]
-fn flash_slow_timing() {
-    wr(M0_TIMING, 0x4000_6204);
+fn flash_timing(t: u32) {
+    wr(M0_TIMING, t);
     rd(M0_TIMING);
     for _ in 0..1000 {
         // SAFETY: no-op.
@@ -252,7 +260,7 @@ pub fn init_clocks(
     let xosc = hal::xosc::setup_xosc_blocking(xosc, XTAL_HZ.Hz()).unwrap();
     watchdog.enable_tick_generation((XTAL_HZ / 1_000_000) as u16);
     vreg_set_voltage(VREG_VSEL);
-    flash_slow_timing();
+    flash_timing(M0_TIMING_SLOW);
     let mut clocks = hal::clocks::ClocksManager::new(clocks);
     let pll_sys =
         setup_pll_blocking(pll_sys, xosc.operating_frequency(), PLL_SYS_OC, &mut clocks, resets)
@@ -261,7 +269,7 @@ pub fn init_clocks(
         setup_pll_blocking(pll_usb, xosc.operating_frequency(), PLL_USB_48MHZ, &mut clocks, resets)
             .unwrap();
     clocks.init_default(&xosc, &pll_sys, &pll_usb).unwrap();
-    flash_slow_timing();
+    flash_timing(M0_TIMING_FAST);
     clocks
 }
 

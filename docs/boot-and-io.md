@@ -9,7 +9,8 @@ of flash.
 
 On core 0, the stub:
 
-1. Sets the clocks to 348 MHz, at 1.20 V.
+1. Sets the clocks to 348 MHz, at 1.20 V, and the flash's QSPI clock to
+   116 MHz.
 2. Brings up the PSRAM on QMI CS1.
 3. Maps PSRAM 0–8 MiB at 0x11400000 through ATRANS5 and ATRANS6.
 4. Sets up the console rings in SRAM8/9 (0x20080000) and the I/O area
