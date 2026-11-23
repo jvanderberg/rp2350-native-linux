@@ -1,0 +1,75 @@
+From: Josh Vanderberg <jvanderberg@gmail.com>
+Subject: [PATCH] daemon: on ARMv7-M nommu the parent keeps off the shared stack
+
+Without an MMU, daemon() clones with CLONE_VM and no new stack: the
+child goes on on the parent's stack while the parent exits, and the
+parent must not write to that stack in between. On ARMv7-M it does
+whatever the C says: each exception entry and return (the clone's
+return, the exit syscall's entry) stores an 8-word frame just below sp,
+in the frames the child is already using. The child later returned to an
+xPSR value (gpioset -z died with a bus error at 0x21000000 about one time
+in eight). Also, in Thumb INTERNAL_SYSCALL keeps r7 and the syscall
+number on the stack around each svc.
+
+On M-profile ARM (ARMv7-M, ARMv8-M) the parent now does the clone and its exit on a small stack of
+its own, in registers only; the child gets the old sp back as clone's new
+stack.
+---
+--- a/libc/unistd/daemon.c	2026-08-08 11:20:19.000000000 +0000
++++ b/libc/unistd/daemon.c	2026-11-23 17:24:50.782737864 +0000
+@@ -63,6 +63,47 @@
+ /* use clone() to get fork() like behavior here -- we just want to disassociate
+  * from the controlling terminal
+  */
++#if defined __arm__ && __ARM_ARCH_PROFILE == 'M'
++#define __DAEMON_STR(x) #x
++#define __DAEMON_XSTR(x) __DAEMON_STR(x)
++/* The child goes on on the parent's stack, so the parent must not write
++ * to it after the clone. On ARMv7-M it can't help writing to it from C:
++ * each exception entry and return (the clone's return, the exit's entry)
++ * stores an 8-word frame just below sp, in the stack the child is already
++ * using, which then returned to an xPSR value. So the parent moves to a
++ * stack of its own for the clone and its exit; the child gets the old sp
++ * back as clone's new stack. In Thumb r7 is the frame pointer: it waits
++ * in ip, which the kernel keeps. */
++static unsigned long __daemon_parent_stack[32] __attribute__((aligned(8)));
++
++static inline pid_t _fork_parent(void)
++{
++	register long r0 __asm__("r0") = CLONE_VM;
++	register unsigned long r3 __asm__("r3") =
++		(unsigned long)(__daemon_parent_stack + 32);
++
++	__asm__ __volatile__(
++		"mov	r2, sp\n\t"
++		"mov	r1, r2\n\t"		/* the child's sp: this one */
++		"mov	sp, r3\n\t"		/* the parent's: its own */
++		"mov	ip, r7\n\t"
++		"mov	r7, #" __DAEMON_XSTR(__NR_clone) "\n\t"
++		"svc	0\n\t"
++		"cmp	r0, #0\n\t"
++		"ble	1f\n\t"
++		/* the parent: exit(0) */
++		"mov	r0, #0\n\t"
++		"mov	r7, #" __DAEMON_XSTR(__NR_exit) "\n\t"
++		"svc	0\n"
++		/* the child, or a failed clone: back on the stack */
++		"1:\tmov	sp, r2\n\t"
++		"mov	r7, ip"
++		: "+r" (r0), "+r" (r3)
++		:
++		: "r1", "r2", "ip", "cc", "memory");
++	return r0;
++}
++#else
+ static inline pid_t _fork_parent(void)
+ {
+ 	INTERNAL_SYSCALL_DECL(err);
+@@ -72,6 +113,7 @@
+ 		INTERNAL_SYSCALL(exit, err, 1, 0);
+ 	return ret;
+ }
++#endif
+ static inline pid_t fork_parent(void)
+ {
+ 	/* Block all signals to keep the parent from using the stack */
