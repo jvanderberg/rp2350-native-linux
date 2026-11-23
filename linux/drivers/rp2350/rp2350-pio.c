@@ -304,7 +304,10 @@ static int rp_dma_alloc(struct rp_pio *p, u32 size)
 	if (p->dma_page)
 		return -EBUSY;
 	size = PAGE_ALIGN(size);
-	p->dma_page = alloc_pages(GFP_KERNEL | __GFP_ZERO, get_order(size));
+	/* contiguous memory the program asked for: when it isn't there, fail
+	 * (ENOMEM; it may ask for less) rather than run the OOM killer, which
+	 * an allocation of 32 KiB or less would */
+	p->dma_page = alloc_pages(GFP_KERNEL | __GFP_ZERO | __GFP_NORETRY | __GFP_NOWARN, get_order(size));
 	if (!p->dma_page)
 		return -ENOMEM;
 	p->dma_size = size;
