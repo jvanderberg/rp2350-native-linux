@@ -52,6 +52,16 @@ ASM = {
     "arch/arm/lib/clearbit.o": ["_clear_bit"],
     "arch/arm/lib/testsetbit.o": ["_test_and_set_bit"],
     "arch/arm/lib/testclearbit.o": ["_test_and_clear_bit"],
+    "arch/arm/lib/csumpartialcopy.o": ["csum_partial_copy_nocheck"],
+    "arch/arm/lib/call_with_stack.o": ["call_with_stack"],
+    "arch/arm/mm/cache-nop.o": ["nop_flush_icache_all", "nop_flush_kern_cache_all",
+                                "nop_flush_kern_cache_louis", "nop_flush_user_cache_all",
+                                "nop_flush_user_cache_range", "nop_coherent_kern_range",
+                                "nop_coherent_user_range", "nop_flush_kern_dcache_area",
+                                "nop_dma_flush_range", "nop_dma_map_area", "nop_dma_unmap_area"],
+    # IRQ and PendSV entry, the context switch (SVC entry is .entry.text)
+    "arch/arm/kernel/entry-v7m.o": ["__invalid_entry", "__irq_entry", "__pendsv_entry",
+                                    "__switch_to", "__fault_entry"],
 }
 # special sections that move whole: (section, start marker, end marker)
 SPECIAL = [
@@ -61,7 +71,16 @@ SPECIAL = [
     (".noinstr.text", "__noinstr_text_start", "__noinstr_text_end"),
     (".sched.text", "__sched_text_start", "__sched_text_end"),
 ]
-SKIP = ("cpu_v7m_",)		# proc-v7m.S: runs before the copy, and idle
+SKIP = ("cpu_v7m_", "cpu_cm7_")	# proc-v7m.S: runs before the copy, and idle
+
+
+def rank(name, asm_of):
+    """which of the names at one address its section is named after"""
+    if name in asm_of:
+        return 0
+    if name.startswith("__se_sys_"):	# SYSCALL_DEFINE: sys_NAME is an alias
+        return 1
+    return 3 if name.startswith("sys_") else 2
 
 
 def main():
@@ -73,11 +92,14 @@ def main():
         marks[n] = int(a, 16)
     stext, etext = marks["_stext"], marks["_etext"]
     # noinstr.text holds cpuidle.text: only the part before it is noinstr's own
+    # .cpuidle.text, idle, stays where it is; noinstr.text holds it (in a
+    # kernel that has none of it in SRAM), so noinstr's own part ends there
+    idle = (marks.get("__cpuidle_text_start", 0), marks.get("__cpuidle_text_end", 0))
     ranges = []
     for sec, s, e in SPECIAL:
         lo, hi = marks[s], marks[e]
-        if sec == ".noinstr.text" and "__cpuidle_text_start" in marks:
-            hi = marks["__cpuidle_text_start"]
+        if sec == ".noinstr.text" and lo <= idle[0] <= hi:
+            hi = idle[0]
         if hi > lo:
             ranges.append((lo, hi, sec, s, e))
 
@@ -98,7 +120,6 @@ def main():
             if (stext <= a < etext or sram[0] <= a < sram[1]) and size:
                 funcs.append((a, size, f[3]))
     funcs = sorted(set(funcs))
-    addrs = [f[0] for f in funcs]
     # *(.text.NAME) takes every function of that name: static helpers have
     # dozens of copies, so a name costs all of them
     name_size = collections.Counter()
@@ -108,16 +129,25 @@ def main():
     asm_size = collections.Counter()
     for a, size in {(f[0], f[1]) for f in funcs if f[2] in asm_of}:
         asm_size[asm_of[[f[2] for f in funcs if f[0] == a and f[2] in asm_of][0]]] += size
+    # one name per address for the lookup: the one its section is named after
+    best = {}
+    for a, size, name in funcs:
+        if a not in best or rank(name, asm_of) < rank(best[a][2], asm_of):
+            best[a] = (a, size, name)
+    lookup = sorted(best.values())
+    addrs = [f[0] for f in lookup]
 
     def unit(pc):
         """(key, pattern, size, kind) of the code at pc, or None"""
+        if idle[0] <= pc < idle[1]:
+            return None
         for lo, hi, sec, s, e in ranges:
             if lo <= pc < hi:
                 return (sec, sec, hi - lo, "special")
         i = bisect.bisect_right(addrs, pc) - 1
-        if i < 0 or pc >= funcs[i][0] + funcs[i][1]:
+        if i < 0 or pc >= lookup[i][0] + lookup[i][1]:
             return None
-        a, size, name = funcs[i]
+        a, size, name = lookup[i]
         if name.startswith(SKIP):
             return None
         if name in asm_of:

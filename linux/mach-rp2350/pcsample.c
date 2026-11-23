@@ -121,7 +121,7 @@ static int __init pcs_init(void)
 	writel_relaxed(readl_relaxed(EPPB_NMI_MASK0) | 2, EPPB_NMI_MASK0);
 	proc_create("pcsample", 0644, NULL, &pcs_ops);
 	if (boot_period) {
-		period = boot_period;
+		period = boot_period < 20 ? 20 : boot_period;
 		writel_relaxed(readl_relaxed(T_RAWL) + period, T_ALARM1);
 	}
 	return 0;

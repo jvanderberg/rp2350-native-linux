@@ -48,7 +48,8 @@ pipe round trip between FDPIC processes is 93% kernel time, spread over
 hundreds of functions, most of it waiting on flash. `CONFIG_RP2350_HOT_TEXT`
 builds the kernel with `-ffunction-sections` and links its hottest 224 KiB
 into SRAM at 0x20000000: C functions one by one, and whole the exception
-entry code, `.sched.text`, `.noinstr.text`, `memcpy` and `memset`. The
+entry code (`.entry.text` and `entry-v7m.S`), `.sched.text`,
+`.noinstr.text`, `memcpy` and `memset`. The
 next 48 KiB goes first in flash `.text`, side by side. 224 KiB covers 98.5%
 of the kernel's samples in the 13 workloads profiled (128 KiB covers 93%).
 
@@ -56,13 +57,17 @@ With the flash at 116 MHz, the same root filesystem, three runs each:
 
 | Kernel code in SRAM | none | 20 KiB | 64 KiB | 128 KiB | 224 KiB |
 |---|---|---|---|---|---|
-| Pipe round trip, FDPIC | 443–492 µs | 116–165 µs | 108–128 µs | 96–113 µs | 104–119 µs |
-| Pipe round trip, ATRANS | 1034–1056 µs | 494–495 µs | 364–369 µs | 353–358 µs | 357–360 µs |
-| 30 × `echo x \| cat` | 0.58–0.60 s | 0.50 s | 0.43–0.44 s | 0.41 s | 0.36–0.37 s |
-| 2000-iteration `ash` loop | 0.82 s | 0.80–0.81 s | 0.78–0.79 s | 0.77–0.79 s | 0.77–0.78 s |
-| `seq 20000` over telnet | 11 KB/s | 20 KB/s | | 50–59 KB/s | 62 KB/s |
-| 1.5 MB sent through ssh | 3.7 s | | | 3.1–3.3 s | 2.9–3.0 s |
-| 8 MiB read from the SD card | 3.1 s | | | 2.7–2.9 s | 2.6 s |
+| Pipe round trip, FDPIC | 443–492 µs | 116–165 µs | 108–128 µs | 96–113 µs | 83–99 µs |
+| Pipe round trip, ATRANS | 1034–1056 µs | 494–495 µs | 364–369 µs | 353–358 µs | 337–341 µs |
+| 30 × `echo x \| cat` | 0.58–0.60 s | 0.50 s | 0.43–0.44 s | 0.41 s | 0.35–0.37 s |
+| 2000-iteration `ash` loop | 0.82 s | 0.80–0.81 s | 0.78–0.79 s | 0.77–0.79 s | 0.78 s |
+| `seq 20000` over telnet | 11 KB/s | 20 KB/s | | 50–59 KB/s | 50–62 KB/s |
+| 1.5 MB sent through ssh | 3.7 s | | | 3.1–3.3 s | 2.9–3.8 s |
+| 8 MiB read from the SD card | 3.1 s | | | 2.7–2.9 s | 2.6–2.8 s |
+
+The 20 to 128 KiB columns were measured before the IRQ and PendSV entry
+and `__switch_to` (in `entry-v7m.S`, plain `.text`) were moved too. The
+network and SD figures vary with the Wi-Fi and the card from run to run.
 
 Past what the pipe benchmarks use, the extra code is the tty, the network,
 the block layer and exec. The `ash` loop is user code, which runs from
@@ -98,7 +103,10 @@ echo 0 > /proc/pcsample; cat /proc/pcsample > NAME.bin
 
 and run `tools/hot-text.py vmlinux System.map linux/mach-rp2350 224 48
 *.bin` with that kernel's `vmlinux` and `System.map`. Every workload weighs
-the same. A function that is renamed or gone just stops matching.
+the same. A function that is renamed or gone just stops matching; after a
+build, every `*(.text.NAME)` in `sram-text.lds.inc` should name a symbol
+below `__sram_text_end` in `System.map`. An assembly file's code is in
+plain `.text`, so it moves only if it is in the script's `ASM` table.
 
 ### busybox
 

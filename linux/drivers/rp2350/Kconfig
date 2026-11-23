@@ -88,7 +88,10 @@ config RP2350_PCSAMPLE
 	  current's pid) every PERIOD microseconds, interrupts-off code
 	  included. "echo PERIOD > /proc/pcsample" starts it, "echo 0" stops
 	  it, and reading the file gives the samples; pcsample=PERIOD on the
-	  command line starts it at boot. For tools/hot-text.py.
+	  command line starts it at boot. For tools/hot-text.py. A sample
+	  taken while a user program's stack pointer is bad (forktest's badsp
+	  cases) faults at NMI priority and locks the core up, so don't
+	  sample those.
 
 # The board's pins on core 0 (pins/README.md), with the standard Linux
 # interfaces (gpiochip, i2c-dev, spidev, pwm, iio) and /dev/pioN.
