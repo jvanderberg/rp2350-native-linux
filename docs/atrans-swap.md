@@ -45,8 +45,12 @@ echo age 10 > /proc/atrans-swap       # ...of processes asleep at least 10 s
 - **Without `low`,** processes are swapped out only when a block can't be
   found, or when the kernel side is short of memory (below).
 
-A swapped-out process shows VSZ 0 in `ps`, and `[swapped out]` in
-`/proc/<pid>/maps`. Killing it with SIGKILL gives its slots back.
+`free` and `top` show it as swap (`SwapTotal`, `SwapFree`; `/proc/swaps`
+lists the device or file). A swapped-out process keeps its VSZ in `ps`; its
+RSS drops to its shared text, which stays resident, and `VmSwap` in
+`/proc/<pid>/status` is what swap holds of it ([memory.md](memory.md#what-free-top-and-ps-report)).
+`/proc/<pid>/maps` shows `[swapped out]`. Killing it with SIGKILL gives its
+slots back.
 
 ## How it works
 
@@ -291,10 +295,8 @@ swaptest pipes KIB            # fill pipes nobody reads
 - One swap area at a time, and no priorities.
 - A process goes whole or not at all: no swap-out of a single thread's
   stack.
-- The OOM killer can't weigh ATRANS processes.
 - FDPIC processes (PID 1 and the small daemons) can't be swapped: they live
   in ordinary kernel memory, scattered.
-- `/proc/meminfo` doesn't count swap; `/proc/atrans-swap` does.
 - Pulling the card while processes are swapped out is handled by the code
   paths for capacity 0 and read errors; it has not been exercised on the
   board.
