@@ -22,7 +22,7 @@ build() {
 
 # not ${*:-...}: busybox hush expands that to nothing
 targets="$*"
-[ -n "$targets" ] || targets="stackfall rain pulse asteroids bogomips life maze xeyes xmaze"
+[ -n "$targets" ] || targets="stackfall rain pulse asteroids bogomips life maze xeyes xmaze xpulse"
 status=0
 for t in $targets; do
     case $t in
@@ -35,6 +35,7 @@ for t in $targets; do
         maze)      build maze maze.c || status=1 ;;
         xeyes)     build xeyes xeyes.c || status=1 ;;
         xmaze)     build xmaze xmaze.c || status=1 ;;
+        xpulse)    build xpulse xpulse.c pulse_data.c || status=1 ;;
         *)         echo "unknown demo: $t"; status=1 ;;
     esac
 done
