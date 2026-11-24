@@ -4,15 +4,9 @@ Programs for the board: games and demos, a telnet BBS, two file managers,
 a Midnight Commander lookalike, a terminal multiplexer, Wolfenstein 3D and
 a WS2812 LED driver.
 
-There are two ways to build them:
-
-- `atrans/build-extras.sh` cross-builds them with `atrans-gcc` (the
-  `extras` stage of `atrans/run-build.sh`) into the ATRANS tree that goes
-  into the image: the programs in `/usr/bin` (the demo `httpd` as
-  `demo-httpd`) and the BBS in `/usr/share/bbs`. `ws2812` is not among
-  them; it is in `/usr/share/examples/pio`.
-- On the board, `cc` (tcc) builds the same sources with the commands
-  below. `tcc/extras.sh` checks that they build with the cross tcc.
+They aren't in the image. Copy the sources to the board and build them
+there with `cc` (tcc), using the commands below. On the host,
+`tcc/extras.sh` checks that they build with the cross tcc.
 
 | Directory | What it is | Build on the board and run |
 |---|---|---|

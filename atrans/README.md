@@ -115,17 +115,18 @@ tar -xzf out/atrans-root.tar.gz -C "$TARGET_DIR"
 
 | Path | Contents |
 |---|---|
-| `usr/bin` | tmux, nano, mg, less, bc, dc, ncdu, lua, luac, htop, rz/sz (lrz/lsz/rb/sb/rx/sx), clear, tput, tset/reset; Dropbear's client applets (`dbclient`, `ssh`, `scp`, `dropbearkey`, `dropbearconvert`, symlinks to `../sbin/dropbear`); the extras `asteroids stackfall rain pulse life mandel bogomips demo-httpd mc tm nnn noice`; `bbsctl`; `claude-remote`, `claude-guest-mcp` |
+| `usr/bin` | tmux, nano, mg, less, bc, dc, ncdu, lua, luac, htop, rz/sz (lrz/lsz/rb/sb/rx/sx), clear, tput, tset/reset; Dropbear's client applets (`dbclient`, `ssh`, `scp`, `dropbearkey`, `dropbearconvert`, symlinks to `../sbin/dropbear`); `claude-remote`, `claude-guest-mcp` |
 | `usr/sbin/dropbear` | Dropbear, one multi-call binary. It is built with public-key logins only and no re-exec per connection (`dropbear-localoptions.h`). |
 | `etc/init.d/S50dropbear`, `etc/default/dropbear`, `etc/dropbear -> /home/dropbear` | SSH: host keys are made at the first connection and kept in `/home/dropbear`, so they last across reboots. |
 | `usr/share/terminfo` | xterm, xterm-256color, tmux, tmux-256color, screen, screen-256color, vt100/102/220, linux, ansi, putty, dumb |
-| `usr/share/bbs` | The BBS (`bbs`, built for `BBSDIR=/usr/share/bbs`), its MUD and its settings. `bbsctl start` uses the binary as is, because there is no `bbs.c` to rebuild from. Its `data/` is created at run time. |
 | `usr/libexec/atrans-tests` | `hello`, `selftest`, `run-tests.sh` (below) |
 | `usr/lib/atrans` | The sysroot for building on the board (below) |
 
 The overlay replaces any busybox applet with the same name (`less`,
-`clear`, `reset`, maybe `bc`). The busybox `httpd` applet stays, which is
-why the demo one is called `demo-httpd`.
+`clear`, `reset`, maybe `bc`).
+
+The programs in `extras/` are not in the overlay. They are built on the
+board with `cc` ([extras/README.md](../extras/README.md)).
 
 ### Sysroot for `cc` on the board: `/usr/lib/atrans`
 
@@ -173,15 +174,10 @@ holds the whole image.
 | dropbear (multi-call) | 288 KB | 277 KiB | 8 KiB | a forked child per connection, plus a shell |
 | nano | 293 KB | 282 KiB | 10 KiB | |
 | htop | 356 KB | 339 KiB | 16 KiB | |
-| nnn | 288 KB | 277 KiB | 87 KiB | uses threads (each takes a 128 KiB stack from mmap) |
 | less | 256 KB | 237 KiB | 60 KiB | |
 | mg | 256 KB | 238 KiB | 22 KiB | |
 | ncdu | 247 KB | 237 KiB | 11 KiB | its heap grows with the tree it scans |
-| noice | 217 KB | 208 KiB | 15 KiB | |
 | lua / luac | 197 / 129 KB | 188 / 122 KiB | 7 / 5 KiB | |
-| mc | 110 KB | 103 KiB | 29 KiB | |
-| tm | 69 KB | 63 KiB | 168 KiB | its bss holds the scrollback |
-| bbs | 97 KB | 90 KiB | 21 KiB | |
 | bc / dc | 73 / 54 KB | 67 / 48 KiB | 5 / 5 KiB | |
 | rz / sz | 96 / 90 KB | 90 / 83 KiB | 6 / 7 KiB | |
 | clear, tput, tset | 103–111 KB | 96–104 KiB | 4–6 KiB | ncurses' terminfo reader |
@@ -213,7 +209,7 @@ The run covers:
   - mmap; pipes with poll; ptys
   - 32- and 64-bit atomics; soft-float; clocks
 - Lua, bc, dropbearkey (ed25519 and ECDSA), the version banners of nano,
-  less, ncdu, htop and lsz, tput, mandel and bogomips
+  less, ncdu, htop and lsz, and tput
 - claude-guest-mcp running a shell command
 - tmux: new-session, send-keys, capture-pane and list-sessions
 - a Dropbear server with a dbclient login over 127.0.0.1, both without a

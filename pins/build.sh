@@ -127,9 +127,6 @@ tree() {
   done
   $H/pioasm /native/br-external/package/libpio/src/examples/ws2812.pio $H/ws2812.pio.h
   $CC $X -Wall -I$H -o $E/ws2812 /native/br-external/package/libpio/src/examples/ws2812.c -lpio
-  # extras/ws2812 (the same program) as a command
-  mkdir -p $H/x && $H/pioasm /native/extras/ws2812/ws2812.pio $H/x/ws2812.pio.h
-  $CC $X -Wall -I$H/x -o $R/usr/bin/ws2812 /native/extras/ws2812/ws2812.c -lpio
   # the PIO self-tests (tests/pio), prebuilt
   $CC $X -Wall -o $T/pio-selftest $P/tests/pio/pio-selftest.c -lpio -lpthread
   cp $P/tests/pio/rp2_selftest.py $T/
@@ -138,7 +135,7 @@ tree() {
   done
   cp $P/tests/*.sh $T/ 2>/dev/null || true
   ${CC%gcc}strip $E/squarewave $E/pio-fifo $E/pio-dma $E/pio-edges $E/ws2812 \
-    $R/usr/bin/ws2812 $T/pio-selftest $T/pinpeek 2>/dev/null || true
+    $T/pio-selftest $T/pinpeek 2>/dev/null || true
   # MicroPython's default heap is 1 MiB of contiguous memory, which nommu
   # may not find after a while: the command runs it with -X heapsize
   if [[ -f $R/usr/bin/micropython ]]; then

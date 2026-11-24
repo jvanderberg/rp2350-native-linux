@@ -37,8 +37,6 @@ check ncdu "ncdu " ncdu -v
 check htop "htop " htop --version
 check lsz "lsz" lsz --version
 check tput "80" tput -T xterm cols
-check mandel "@" mandel 30
-check bogomips "BogoMIPS" bogomips
 check "claude-guest-mcp" '"text":"mcp-shell-ok' sh -c "printf '%s\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"bash\",\"arguments\":{\"command\":\"echo mcp-shell-ok\"}}}' | claude-guest-mcp '$T'"
 
 # tmux: a server with a shell in a pty, a command sent to it, its screen read back
