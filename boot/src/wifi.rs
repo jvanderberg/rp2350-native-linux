@@ -567,9 +567,14 @@ async fn run(pwr: Pwr, spi: PioSpi, creds: Option<Creds>) {
                     // in its filter (10 slots). mDNS (224.0.0.251, for
                     // mdnsd) is the only group Linux uses; adding it again
                     // after each join is a no-op, and keeps it there should
-                    // a leave clear the list.
-                    if let Err(e) = control.add_multicast_address(MDNS_MAC).await {
-                        rprintln!("[wifi] mDNS multicast filter: {:?}", e);
+                    // a leave clear the list. The chip's reply has a
+                    // deadline, as the join's has: one that never came would
+                    // stop the join loop for good.
+                    let add = control.add_multicast_address(MDNS_MAC);
+                    match embassy_time::with_timeout(embassy_time::Duration::from_secs(2), add).await {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => rprintln!("[wifi] mDNS multicast filter: {:?}", e),
+                        Err(_) => rprintln!("[wifi] mDNS multicast filter: no reply"),
                     }
                     io::wr(io::NET_JOINS, io::rd(io::NET_JOINS) + 1);
                     wait_s = JOIN_RETRY_MIN_S;

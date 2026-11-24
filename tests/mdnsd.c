@@ -23,7 +23,10 @@
  *
  * Queries from port 5353 are answered by multicast, or by unicast when
  * they ask for it (the QU bit); others (dig @224.0.0.251 -p 5353, a
- * resolver's direct query) get a legacy unicast reply to their port. The
+ * resolver's direct query) get a legacy unicast reply to their port.
+ * Queries from outside the interface's subnet are ignored, and a record
+ * that went out by multicast in the last second is left out of the next
+ * multicast reply. The
  * records are announced twice when the interface gets an address or its
  * link comes back, and on SIGHUP; SIGTERM sends them again with TTL 0
  * (goodbye) and exits.
@@ -80,6 +83,9 @@ static struct {
 } svc[MAXSVC];
 static int nsvc, verbose;
 static struct in_addr addr;	/* 0: no address, or the link is down */
+static struct in_addr mask;	/* its netmask: queries from off the link are dropped */
+/* when each record was last multicast (RFC 6762 6: at most once a second) */
+static long long last_mc[64];
 static struct sockaddr_in group;
 static volatile sig_atomic_t stop, hup;
 
@@ -214,6 +220,14 @@ static int count(uint64_t m)
 	return n;
 }
 
+static long long now_ms(void)
+{
+	struct timespec t;
+
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return t.tv_sec * 1000LL + t.tv_nsec / 1000000;
+}
+
 static void send_pkt(int fd, struct pkt *p, const struct sockaddr_in *to)
 {
 	if (p->err) {
@@ -231,6 +245,7 @@ static void send_pkt(int fd, struct pkt *p, const struct sockaddr_in *to)
 static void announce_set(int fd, uint64_t m, int ttl)
 {
 	struct pkt p = { .n = 0 };
+	long long now = now_ms();
 	int r;
 
 	put16(&p, 0);
@@ -240,8 +255,10 @@ static void announce_set(int fd, uint64_t m, int ttl)
 	put16(&p, 0);
 	put16(&p, 0);
 	for (r = 0; r < nrec(); r++)
-		if (m & BIT(r))
+		if (m & BIT(r)) {
 			put_rr(&p, r, ttl, 0);
+			last_mc[r] = now;
+		}
 	send_pkt(fd, &p, &group);
 }
 
@@ -331,8 +348,12 @@ static void handle(int fd, const uint8_t *b, int n, const struct sockaddr_in *fr
 	uint64_t ans = 0, add = 0;
 	int legacy = ntohs(from->sin_port) != PORT, qu = 0, nq = 0, off = 12, i, r;
 	struct pkt p = { .n = 0 };
+	long long now = now_ms();
 
 	if (n < 12 || !addr.s_addr)
+		return;
+	/* RFC 6762 11: only queries from the local link */
+	if ((from->sin_addr.s_addr ^ addr.s_addr) & mask.s_addr)
 		return;
 	flags = b[2] << 8 | b[3];
 	qd = b[4] << 8 | b[5];
@@ -348,6 +369,13 @@ static void handle(int fd, const uint8_t *b, int n, const struct sockaddr_in *fr
 		type = b[off] << 8 | b[off + 1];
 		cls = b[off + 2] << 8 | b[off + 3];
 		off += 4;
+		/* a legacy reply echoes the questions */
+		if (nq < MAXQ) {
+			strcpy(q[nq].name, name);
+			q[nq].type = type;
+			q[nq].cls = cls & 0x7fff;
+			nq++;
+		}
 		if ((cls & 0x7fff) != 1 && (cls & 0x7fff) != 255)
 			continue;
 		m = match(name, type);
@@ -359,14 +387,14 @@ static void handle(int fd, const uint8_t *b, int n, const struct sockaddr_in *fr
 			continue;
 		if (cls & 0x8000)
 			qu = 1;
-		if (nq < MAXQ) {
-			strcpy(q[nq].name, name);
-			q[nq].type = type;
-			q[nq].cls = cls & 0x7fff;
-			nq++;
-		}
 		ans |= m;
 	}
+	/* a multicast reply leaves out what went out by multicast in the
+	 * last second */
+	if (!legacy && !qu)
+		for (r = 0; r < nrec(); r++)
+			if ((ans & BIT(r)) && last_mc[r] && now - last_mc[r] < 1000)
+				ans &= ~BIT(r);
 	if (!ans)
 		return;
 	/* what the asker will want next */
@@ -399,7 +427,14 @@ static void handle(int fd, const uint8_t *b, int n, const struct sockaddr_in *fr
 	for (r = 0; r < nrec(); r++)
 		if (add & BIT(r))
 			put_rr(&p, r, -1, legacy);
-	send_pkt(fd, &p, legacy || qu ? from : &group);
+	if (legacy || qu) {
+		send_pkt(fd, &p, from);
+		return;
+	}
+	send_pkt(fd, &p, &group);
+	for (r = 0; r < nrec(); r++)
+		if ((ans | add) & BIT(r))
+			last_mc[r] = now;
 }
 
 /* ---- the interface */
@@ -433,8 +468,8 @@ static int join(int fd)
 	return 1;
 }
 
-/* The interface's address while its link is up, else 0. */
-static struct in_addr ifaddr(int fd)
+/* The interface's address while its link is up, else 0, and its netmask. */
+static struct in_addr ifaddr(int fd, struct in_addr *m)
 {
 	struct ifreq ifr;
 	struct in_addr a = { 0 };
@@ -442,17 +477,12 @@ static struct in_addr ifaddr(int fd)
 	if (ifreq(fd, SIOCGIFFLAGS, &ifr) < 0 || !(ifr.ifr_flags & IFF_UP) ||
 	    !(ifr.ifr_flags & IFF_RUNNING))
 		return a;
+	if (ifreq(fd, SIOCGIFNETMASK, &ifr) < 0)
+		return a;
+	*m = ((struct sockaddr_in *)&ifr.ifr_netmask)->sin_addr;
 	if (ifreq(fd, SIOCGIFADDR, &ifr) < 0)
 		return a;
 	return ((struct sockaddr_in *)&ifr.ifr_addr)->sin_addr;
-}
-
-static long long now_ms(void)
-{
-	struct timespec t;
-
-	clock_gettime(CLOCK_MONOTONIC, &t);
-	return t.tv_sec * 1000LL + t.tv_nsec / 1000000;
 }
 
 static void on_signal(int sig)
@@ -492,11 +522,14 @@ int main(int argc, char **argv)
 		usage();
 	snprintf(hostname, sizeof(hostname), "%s.local", host);
 	for (i = optind; i < argc; i++) {
+		char *end;
 		long port;
 
 		colon = strrchr(argv[i], ':');
-		if (nsvc == MAXSVC || !colon || colon == argv[i] || (port = atol(colon + 1)) <= 0 ||
-		    port > 65535 || colon - argv[i] > 100)
+		if (nsvc == MAXSVC || !colon || colon == argv[i] || colon - argv[i] > 100)
+			usage();
+		port = strtol(colon + 1, &end, 10);
+		if (*end || port <= 0 || port > 65535)
 			usage();
 		*colon = 0;
 		snprintf(svc[nsvc].type, NAMELEN, "%s.local", argv[i]);
@@ -508,8 +541,14 @@ int main(int argc, char **argv)
 	memset(&sig, 0, sizeof(sig));
 	sig.sa_handler = on_signal;	/* no SA_RESTART: poll returns at once */
 	sigaction(SIGTERM, &sig, NULL);
-	sigaction(SIGINT, &sig, NULL);
 	sigaction(SIGHUP, &sig, NULL);
+	/* SIGINT stays ignored when the shell started us with & */
+	{
+		struct sigaction old;
+
+		if (sigaction(SIGINT, NULL, &old) == 0 && old.sa_handler != SIG_IGN)
+			sigaction(SIGINT, &sig, NULL);
+	}
 	signal(SIGPIPE, SIG_IGN);
 
 	memset(&group, 0, sizeof(group));
@@ -525,8 +564,10 @@ int main(int argc, char **argv)
 		perror("mdnsd: socket on port 5353");
 		return 1;
 	}
-	/* RFC 6762 11: sent with IP TTL 255; our own packets don't come back */
+	/* RFC 6762 11: sent with IP TTL 255, unicast replies too; our own
+	 * packets don't come back */
 	setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+	setsockopt(fd, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
 	setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
 
 	for (;;) {
@@ -542,16 +583,24 @@ int main(int argc, char **argv)
 		}
 		/* the interface every 2 s: joined yet, its address, its link */
 		if (now >= next_check) {
-			struct in_addr a;
+			struct in_addr a = { 0 }, m = { 0 };
 
 			next_check = now + 2000;
 			if (!joined)
 				joined = join(fd);
-			a = joined ? ifaddr(fd) : (struct in_addr){ 0 };
+			if (joined)
+				a = ifaddr(fd, &m);
 			if (a.s_addr != addr.s_addr) {
 				const uint8_t *o = (const uint8_t *)&a.s_addr;
 
+				/* a new address on a live link: the old reverse
+				 * name goes (the new A replaces the old one in
+				 * caches by itself, being unique) */
+				if (addr.s_addr && a.s_addr)
+					announce_set(fd, BIT(R_REV), 0);
 				addr = a;
+				mask = m;
+				memset(last_mc, 0, sizeof(last_mc));
 				snprintf(revname, sizeof(revname), "%u.%u.%u.%u.in-addr.arpa", o[3], o[2],
 					 o[1], o[0]);
 				if (verbose)
