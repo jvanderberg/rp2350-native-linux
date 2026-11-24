@@ -86,6 +86,8 @@ rm -f "$1/etc/init.d/S01sramtext"
 # watchd: the SD card and link watchers (S03sd, S41linkwatch) in one small
 # process, with an 8 KiB stack (FDPIC takes its size from PT_GNU_STACK)
 "$CC" -Os -Wl,-z,stack-size=8192 -o "$1/usr/sbin/watchd" /native/tests/watchd.c
+# mdnsd: answers as HOSTNAME.local and advertises ssh and telnet (S45mdnsd)
+"$CC" -Os -Wl,-z,stack-size=8192 -o "$1/usr/sbin/mdnsd" /native/tests/mdnsd.c
 # no FDPIC busybox-extra (target/ is kept between builds): busybox-atrans
 # has its applets
 rm -f "$1/bin/busybox-extra"

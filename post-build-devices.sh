@@ -235,6 +235,31 @@ stop)
 esac
 S
 chmod 755 "$T/etc/init.d/S42watchd"
+# mDNS (tests/mdnsd.c): the board answers as HOSTNAME.local (rp2350.local)
+# and its ssh and telnet show up in service browsers. It follows eth0's
+# address and link itself, announcing again when either changes.
+cat > "$T/etc/init.d/S45mdnsd" <<'S'
+#!/bin/sh
+PID=/var/run/mdnsd.pid
+case "$1" in
+start)
+  [ -x /usr/sbin/mdnsd ] || exit 0
+  s=_telnet._tcp:23
+  [ -x /usr/sbin/dropbear ] && s="_ssh._tcp:22 $s"
+  mdnsd -i eth0 $s </dev/null >/dev/null 2>&1 &
+  echo $! > $PID
+  echo "mdnsd: $(hostname).local"
+  ;;
+stop)
+  [ -f $PID ] && kill "$(cat $PID)" 2>/dev/null
+  rm -f $PID
+  ;;
+restart)
+  "$0" stop; sleep 1; "$0" start
+  ;;
+esac
+S
+chmod 755 "$T/etc/init.d/S45mdnsd"
 
 # ---- SD card ------------------------------------------------------------------------
 cat > "$T/etc/init.d/S03sd" <<'S'
@@ -339,7 +364,7 @@ chmod 755 "$T/etc/init.d/S02memlimits"
 cat > "$T/etc/init.d/S99oomadj" <<'S'
 #!/bin/sh
 [ "$1" = start ] || exit 0
-for d in watchd syslogd klogd udhcpc; do
+for d in watchd syslogd klogd udhcpc mdnsd; do
   for p in $(pidof $d); do echo -1000 > /proc/$p/oom_score_adj; done
 done
 for d in dropbear telnetd crond inetd getty; do

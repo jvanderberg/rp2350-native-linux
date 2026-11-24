@@ -563,6 +563,14 @@ async fn run(pwr: Pwr, spi: PioSpi, creds: Option<Creds>) {
             match r {
                 Ok(()) => {
                     rprintln!("[wifi] joined {:?}", c.ssid);
+                    // The chip drops multicast frames whose address is not
+                    // in its filter (10 slots). mDNS (224.0.0.251, for
+                    // mdnsd) is the only group Linux uses; adding it again
+                    // after each join is a no-op, and keeps it there should
+                    // a leave clear the list.
+                    if let Err(e) = control.add_multicast_address(MDNS_MAC).await {
+                        rprintln!("[wifi] mDNS multicast filter: {:?}", e);
+                    }
                     io::wr(io::NET_JOINS, io::rd(io::NET_JOINS) + 1);
                     wait_s = JOIN_RETRY_MIN_S;
                     REJOINING.store(false, Ordering::Relaxed);
@@ -709,6 +717,8 @@ const JOIN_RETRY_MIN_S: u32 = 5;
 /// A join that hasn't finished after this has failed.
 const JOIN_TIMEOUT_S: u64 = 20;
 const JOIN_RETRY_MAX_S: u32 = 300;
+/// The Ethernet address of the mDNS group 224.0.0.251.
+const MDNS_MAC: [u8; 6] = [0x01, 0x00, 0x5e, 0x00, 0x00, 0xfb];
 /// Seconds Linux may go on sending while no unicast frame comes back
 /// before the link counts as stalled. After a deauth the chip sometimes
 /// reports the link up while nothing passes either way; only traffic shows

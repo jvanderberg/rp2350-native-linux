@@ -22,6 +22,9 @@ and brought back elsewhere in memory.
 - **Wi-Fi and SSH**: the CYW43439 radio as `eth0`, DHCP, and dropbear.
   Logins take about 1 s with the Mac's default ssh settings, so no special
   client configuration is needed.
+- **mDNS**: the board answers as `rp2350.local` (`ssh root@rp2350.local`),
+  and its ssh and telnet show up in service browsers (`dns-sd -B
+  _ssh._tcp`).
 - **Telnet** on port 23.
 - **The SD card**: FAT at `/mnt/sd`, and its swap partition.
 - **`/home` on flash** (jffs2, 1 MiB), kept across reboots and reloads.
