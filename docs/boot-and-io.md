@@ -230,6 +230,7 @@ The kernel starts init without `PATH`, so `overlay-init` sets it.
 | `S40network` | `eth0` with `udhcpc` in the background |
 | `S41linkwatch` | `S41linkwatch event` (from watchd) renews the lease when the link comes back |
 | `S42watchd` | `watchd` (`tests/watchd.c`): polls the card's size and `eth0`'s carrier every 2 s and runs the scripts above when they change |
+| `S45mdnsd` | `mdnsd` (`tests/mdnsd.c`): answers as `rp2350.local` (the hostname) over mDNS and advertises ssh and telnet for service browsers |
 | `S50dropbear` | SSH on port 22, if `dropbear` is in the image. Host keys go in `/home/dropbear` |
 | `S50telnet` | `telnetd` on port 23 |
 | `S99oomadj` | Keeps the OOM killer off the daemons (`oom_score_adj` -1000; -999 for those that start sessions or jobs) |
