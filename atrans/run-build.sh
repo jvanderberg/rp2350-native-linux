@@ -3,7 +3,7 @@
 # Usage: atrans/run-build.sh [all|toolchain|extras|root|shell]
 #   toolchain  gcc + musl (static, Thumb-2 ARMv7-M, soft-float, the ATRANS
 #              v3 layout) and the Buildroot packages (tmux, dropbear, ...)
-#   extras     extras/ programs, tests and claude-guest-mcp (needs host Rust)
+#   extras     the ATRANS tests, busybox and claude-guest-mcp (needs host Rust)
 #   root       out/atrans-root/ and its tarballs
 #   shell      a shell in the container with the toolchain on PATH
 #   make ARGS  make in the Buildroot output, e.g. make dropbear-dirclean all

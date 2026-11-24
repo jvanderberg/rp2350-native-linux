@@ -1,25 +1,20 @@
 # extras
 
 Programs for the board: games and demos, a telnet BBS, two file managers,
-a Midnight Commander lookalike, a terminal multiplexer and a WS2812 LED
-driver.
+a Midnight Commander lookalike, a terminal multiplexer, Wolfenstein 3D and
+a WS2812 LED driver.
 
-There are two ways to build them:
-
-- `atrans/build-extras.sh` cross-builds them with `atrans-gcc` (the
-  `extras` stage of `atrans/run-build.sh`) into the ATRANS tree that goes
-  into the image: the programs in `/usr/bin` (the demo `httpd` as
-  `demo-httpd`) and the BBS in `/usr/share/bbs`. `ws2812` is not among
-  them; it is in `/usr/share/examples/pio`.
-- On the board, `cc` (tcc) builds the same sources with the commands
-  below. `tcc/extras.sh` checks that they build with the cross tcc.
+They aren't in the image. Copy the sources to the board and build them
+there with `cc` (tcc), using the commands below. On the host,
+`tcc/extras.sh` checks that they build with the cross tcc.
 
 | Directory | What it is | Build on the board and run |
 |---|---|---|
 | [`demos/`](demos/) | Terminal games and demos | `./build.sh`, then `./asteroids` |
+| [`wolf3d/`](wolf3d/README.md) | Wolfenstein 3D in an X11 window | see its README |
 | [`bbs/`](bbs/) | A telnet BBS with a MUD | `./bbsctl start` |
-| [`mc/`](mc/README.md) | A Midnight Commander lookalike | `./build.sh && ./mc` |
-| [`tm/`](tm/README.md) | A small tmux work-alike | `./build.sh && ./tm` |
+| [`mc/`](mc/README.md) | A Midnight Commander lookalike, and `xmc`, the same in an X11 window | `./build.sh && ./mc` |
+| [`tm/`](tm/README.md) | A small tmux work-alike, and `xterm`, a terminal in an X11 window | `./build.sh && ./tm` |
 | [`nnn/`](nnn/) | The nnn file manager | `./build.sh && ./nnn` |
 | [`noice/`](noice/) | The noice file browser | see below |
 | [`ws2812/`](ws2812/) | WS2812 LEDs driven by PIO | see below |
@@ -41,13 +36,30 @@ $ tar cf - -C extras . | ssh root@ADDRESS 'mkdir -p /mnt/sd/extras && tar xf - -
 ## demos
 
 `asteroids`, `stackfall` (falling blocks), `life`, `rain` (digital rain),
-`pulse` (CPU, memory, network and processes), `bogomips`, `mandel` and a
-small `httpd`. `./build.sh` builds the first six, or only the ones named
-(`./build.sh life rain`). Build the others with `cc`:
+`pulse` (CPU, memory, network and processes), `bogomips`, `maze` (a
+first-person 3D maze; `./maze -demo` explores it by itself), `mandel` and a
+small `httpd`. `./build.sh` builds the first seven and the three X11 programs
+below, or only the ones named (`./build.sh life rain`). Build the others with
+`cc`:
 
 ```
 # cc -o mandel mandel.c
 # cc -o httpd httpd.c
+```
+
+`xeyes`, `xmaze` and `xpulse` open a window on an X server instead of using
+the terminal, such as XQuartz on a Mac. `xmaze` is the maze drawn as X shapes
+rather than pixels, about 1 KB a frame, so it stays fast over the board's
+network link and sharp at any window size; it takes `-demo` too. `xpulse` is
+`pulse` in a window, with graphs, a process table sorted by clicking a
+column, and a right-click menu to signal a process; an update sends only
+what changed, 1-4 KB. All three use `x11.h`, which speaks the X11 protocol
+itself, so no Xlib is needed; it is the window counterpart of `term.h`. On the machine with the screen, allow
+network clients (XQuartz: Settings > Security) and run
+`xhost +BOARD-ADDRESS`, then on the board:
+
+```
+# DISPLAY=SCREEN-ADDRESS:0 ./xmaze -demo
 ```
 
 ## bbs
@@ -77,6 +89,9 @@ The same program as `ws2812` in `/usr/share/examples/pio`:
 
 `demos/`, `bbs/`, `mc/` and `tm/` are under the repository's MIT license.
 
+- `wolf3d/` is a port of Wolf4SDL, under the GNU GPL version 2 (see its
+  `PROVENANCE` and `LICENSE-GPL-2.0`); its own additions, `xwolf.c`,
+  `SDL.h` and the scripts, are MIT. The game data is not included.
 - `nnn/` and `noice/` are ports of upstream nnn and noice (BSD-2-Clause,
   see their `LICENSE` files), with small shims so they build with tcc.
   `noice/include` holds ncurses headers (MIT-X11).

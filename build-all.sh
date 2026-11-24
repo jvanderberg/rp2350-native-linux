@@ -4,7 +4,7 @@
 #   1. the native Buildroot (toolchain, uClibc-ng FDPIC, busybox): its
 #      toolchain builds the kernel, its tree seeds the pins build, and it
 #      downloads the busybox source busybox-atrans is built from
-#   2. the ATRANS toolchain and packages, extras/, claude-guest-mcp
+#   2. the ATRANS toolchain and packages, claude-guest-mcp
 #      -> out/atrans-root, out/atrans-sysroot.tar.gz
 #   3. tcc for the board against that sysroot, the lean tree -> out/tcc-root
 #   4. the pins userland (libpio, MicroPython, ...; PIO tests built by the

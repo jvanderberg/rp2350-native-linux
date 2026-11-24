@@ -6,7 +6,8 @@
 # Stages:
 #   toolchain  Buildroot for ATRANS programs -> /work/atrans-br (toolchain in
 #              host/, packages in target/)
-#   extras     extras/ programs and the tests, cross-compiled -> /work/atrans-extras
+#   extras     the ATRANS tests and busybox, cross-compiled -> /work/atrans-extras
+#              (the extras/ programs are not in the image)
 #   root       /out/atrans-root (+ /out/atrans-root.tar.gz, /out/atrans-sysroot.tar.gz)
 #   all        all three
 #   make ARGS  make in the Buildroot output (e.g. make dropbear-rebuild)

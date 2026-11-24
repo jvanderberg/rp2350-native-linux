@@ -154,7 +154,7 @@ uClibc. Rebuild it after `buildroot.defconfig` changes. It writes:
 
 | Path | Contents |
 |---|---|
-| `usr/bin` | `gpiodetect gpioinfo gpioget gpioset gpiomon gpionotify` (libgpiod 2), `micropython` (wrapper) and `micropython.bin`, `pioasm`, `ws2812` (extras/ws2812) |
+| `usr/bin` | `gpiodetect gpioinfo gpioget gpioset gpiomon gpionotify` (libgpiod 2), `micropython` (wrapper) and `micropython.bin`, `pioasm` |
 | `usr/sbin` | `i2cdetect i2cget i2cset i2cdump i2ctransfer eeprog` (i2c-tools), `spidev_test` |
 | `usr/lib` | `libgpiod.so*`, `libgpiotools.so*`, `libi2c.so*`, `libpio.so`; `micropython/machine.mpy`, `micropython/rp2.mpy` |
 | `usr/share/examples/pins` | `gpio-blink gpio-edge i2c-scan spi-xfer adc-read`, built (FDPIC) and as source |

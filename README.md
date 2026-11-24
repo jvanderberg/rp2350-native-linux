@@ -34,10 +34,11 @@ and brought back elsewhere in memory.
   IIO), plus `/dev/pio1` and `/dev/pio2` with libpio and `pioasm`
   ([pins/README.md](pins/README.md)).
 - **MicroPython**, with `machine` and `rp2` modules for the pins and PIO.
-- **tmux, mc and the extras**: tmux, htop, nano, mg, less, Lua and ncdu
-  from Buildroot, and the programs in [extras/](extras/README.md): `mc` (a
-  Midnight Commander lookalike), `tm` (a small tmux work-alike), nnn,
-  noice, games and demos, and a telnet BBS.
+- **tmux and friends**: tmux, htop, nano, mg, less, Lua and ncdu from
+  Buildroot. More programs are in [extras/](extras/README.md), built on
+  the board with tcc: `mc` (a Midnight Commander lookalike), `tm` (a small
+  tmux work-alike), nnn, noice, games and demos, X11 programs and a telnet
+  BBS.
 
 ## Hardware
 
@@ -74,7 +75,7 @@ incremental after that:
    build, and it downloads the busybox source `busybox-atrans` is built
    from.
 2. `atrans/run-build.sh all`: the ATRANS toolchain (gcc, musl) and packages,
-   the `extras/` programs, `claude-guest-mcp` (`claude-remote/`, host Rust),
+   `claude-guest-mcp` (`claude-remote/`, host Rust),
    `busybox-atrans`; then `out/atrans-root/` and
    `out/atrans-sysroot.tar.gz` ([atrans/README.md](atrans/README.md)).
 3. tcc ([tcc/](tcc/)): `tcc/apply-patches.sh` (tinycc from repo.or.cz plus
