@@ -87,3 +87,12 @@ PROVIDE(end_to_start = __start_block_addr - __end_block_addr);
 INCLUDE core1-sram.x
 
 
+
+/* Core 0's stack runs from the top of RAM down to the end of .bss, and
+ * nothing stops it there: it builds the radio's driver future (about
+ * 6.3 KiB in use at boot), and past .bss's end it overwrites USB_BUS and
+ * core 1's stack, which shows up as core 1 panicking in usb-device
+ * ("alloc_ep failed: EndpointOverflow") with no console. .data, .core1_text
+ * and .bss share RAM, so a larger core 1 hot path takes from this stack. */
+ASSERT(ORIGIN(RAM) + LENGTH(RAM) - __ebss >= 8K,
+       "less than 8 KiB of RAM left for core 0's stack: shrink .core1_text or .bss");

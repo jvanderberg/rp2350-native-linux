@@ -6,6 +6,13 @@
  * top. Core 1 rings the doorbell (RPIO_BELL_NET) when it received a frame,
  * when the link changed and when a full transmit ring got room; Linux rings
  * core 1's when it queued a frame or freed a receive slot.
+ *
+ * Transmit is scatter-gather with checksum offload, done here: the frame is
+ * gathered from its pieces into its ring slot (SRAM), and the TCP/UDP
+ * checksum is summed over that copy. Without these features the stack's
+ * software GSO copied every segment out of the socket's buffer again, PSRAM
+ * to PSRAM, and checksummed it on the way: a fifth of core 0's time while
+ * sending at full rate.
  */
 #include <linux/etherdevice.h>
 #include <linux/interrupt.h>
@@ -15,6 +22,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
+#include <net/checksum.h>
 
 #include "rp2350-io.h"
 
@@ -114,6 +122,7 @@ static netdev_tx_t rpnet_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct rpnet *p = netdev_priv(dev);
 	u32 tail = readl(p->io + RPIO_NET_TX_TAIL);
 	void __iomem *slot;
+	u8 *frame;
 
 	if (skb->len > RPIO_NET_FRAME_MAX) {
 		dev->stats.tx_dropped++;
@@ -126,8 +135,25 @@ static netdev_tx_t rpnet_xmit(struct sk_buff *skb, struct net_device *dev)
 		return NETDEV_TX_BUSY;
 	}
 	slot = p->io + RPIO_NET_TX_RING + (tail % RPIO_NET_SLOTS) * RPIO_NET_SLOT;
+	frame = (void __force *)(slot + 4);
+	skb_copy_bits(skb, 0, frame, skb->len);
+	if (skb->ip_summed == CHECKSUM_PARTIAL) {
+		/* NETIF_F_HW_CSUM: the sum from csum_start to the end, the
+		 * field (holding the pseudo-header's sum) included, as
+		 * skb_checksum_help does it, but over the copy in SRAM */
+		int start = skb_checksum_start_offset(skb);
+		unsigned int field = start + skb->csum_offset;
+
+		if (WARN_ON_ONCE(start < 0 || start >= skb->len ||
+				 field + sizeof(__sum16) > skb->len)) {
+			dev->stats.tx_dropped++;
+			dev_kfree_skb_any(skb);
+			return NETDEV_TX_OK;
+		}
+		*(__sum16 *)(frame + field) =
+			csum_fold(csum_partial(frame + start, skb->len - start, 0)) ?: CSUM_MANGLED_0;
+	}
 	writel(skb->len, slot);
-	skb_copy_bits(skb, 0, (void __force *)(slot + 4), skb->len);
 	wmb();
 	writel(tail + 1, p->io + RPIO_NET_TX_TAIL);
 	rpio_ring_core1(RPIO_BELL1_NET);
@@ -237,8 +263,22 @@ static ssize_t core1_stats_show(struct device *d, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(core1_stats);
 
+/* core 1's Wi-Fi receive: data frames read from the radio, polls of the
+ * radio's driver that left a frame in the radio for want of room (rx_gate),
+ * frames thrown away because eth0 took none */
+static ssize_t radio_stats_show(struct device *d, struct device_attribute *attr, char *buf)
+{
+	struct rpnet *p = netdev_priv(to_net_dev(d));
+
+	return sysfs_emit(buf, "rx %u held %u discarded %u\n",
+			  readl(p->io + RPIO_DBG_NET_RX_FRAMES), readl(p->io + RPIO_DBG_NET_RX_HELD),
+			  readl(p->io + RPIO_DBG_NET_RX_DISCARDED));
+}
+static DEVICE_ATTR_RO(radio_stats);
+
 static struct attribute *rpnet_attrs[] = {
 	&dev_attr_rejoins.attr, &dev_attr_joins.attr, &dev_attr_core1_stats.attr,
+	&dev_attr_radio_stats.attr,
 	&dev_attr_rejoin.attr, NULL
 };
 static const struct attribute_group rpnet_group = { .attrs = rpnet_attrs };
@@ -272,6 +312,9 @@ static int rpnet_probe(struct platform_device *pdev)
 	dev->netdev_ops = &rpnet_ops;
 	dev->sysfs_groups[0] = &rpnet_group;
 	dev->max_mtu = ETH_DATA_LEN;
+	/* the pieces are gathered and the checksum summed in rpnet_xmit */
+	dev->hw_features = NETIF_F_SG | NETIF_F_HW_CSUM;
+	dev->features = dev->hw_features;
 	if (readl(p->io + RPIO_NET_RADIO) == RPIO_RADIO_UP) {
 		rpnet_get_mac(p, mac);
 		eth_hw_addr_set(dev, mac);
