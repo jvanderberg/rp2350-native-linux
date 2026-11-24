@@ -94,6 +94,14 @@ uses DMA.
   words at `DBG + 0x4c` (0x2006b84c) count data frames read, frames held
   in the chip, and frames thrown away; read them over SWD
   (`probe-rs read --chip RP235x --protocol swd b32 0x2006b84c 3`).
+- **Transmit** is scatter-gather with checksum offload, both done by
+  `rpnet_xmit` on core 0. It gathers the frame's pieces into its ring slot
+  (SRAM) and sums the TCP/UDP checksum over that copy. Without these
+  features the stack's software GSO copied every segment out of the
+  socket's buffer again, PSRAM to PSRAM, with its checksum: a fifth of core
+  0's time when sending at full rate. A byte sent is now copied twice on
+  core 0, from the user into the socket's buffer (PSRAM) and into the ring
+  slot (SRAM).
 - `/sys/class/net/eth0/joins` counts joins; writing to `.../rejoin` forces
   one.
 - **Core 1 must keep up with the bus.** If polling falls behind, the RX FIFO
