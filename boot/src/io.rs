@@ -110,6 +110,10 @@ pub const DBG_SD_BUSY_MAX_US: usize = DBG + 0x3c; // longest busy wait
 pub const DBG_SD_LAST_ERR: usize = DBG + 0x40; // kind | byte << 8 (sd.rs, err_code)
 pub const DBG_SD_BAD_REQ: usize = DBG + 0x44; // requests refused unread (bad buffers)
 pub const DBG_SD_SLOT_WAITS: usize = DBG + 0x48; // read blocks that waited for a free slot
+// Wi-Fi receive (wifi.rs, rx_gate; no sysfs file yet: read them over SWD)
+pub const DBG_NET_RX_FRAMES: usize = DBG + 0x4c; // data frames read from the chip
+pub const DBG_NET_RX_HELD: usize = DBG + 0x50; // waiting frames left in the chip (channel full)
+pub const DBG_NET_RX_DISCARDED: usize = DBG + 0x54; // frames thrown away: Linux took none
 
 // SD read slots (sd.rs recv_block): core 1 fills them, Linux copies them out
 pub const BLK_RD: usize = IO + 0x3900;

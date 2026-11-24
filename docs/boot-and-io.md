@@ -47,9 +47,19 @@ A PIO interrupt is not a wake source: the cyw43 driver leaves PIO0's IRQ
 pending, which would keep core 1 spinning.
 
 With the feature `core1-sram` (the default), core 1's hot code runs from
-SRAM instead of through the XIP cache: the SD path, the USB stack, the loop
-and `mem*`, 17 KB (`core1.x`, copied by `main`). The Wi-Fi driver (about
-43 KB) stays in flash, except its bus transfers.
+SRAM instead of through the XIP cache: the SD path, the USB stack, the loop,
+`mem*` and the radio's poll (with the cyw43 driver's runner inlined into
+it), 28 KB (`core1.x`, copied by `main`). The rest of the Wi-Fi driver
+(bring-up and joins, about 10 KB of code) stays in flash.
+
+That SRAM is shared with `.data`, `.bss` (core 1's 24 KiB stack among it)
+and core 0's stack, which runs from the top of RAM down to the end of
+`.bss` with nothing to stop it. Core 0 builds the radio's driver future
+on it, about 6.3 KiB. `memory.x` fails the link if less than 8 KiB is
+left. When core 0 overruns it, it overwrites `USB_BUS` and core 1 panics
+in usb-device ("alloc_ep failed: EndpointOverflow", in the RTT buffer)
+with no console. A change that makes rustc inline more into
+`core1_loop` can grow `.core1_text` by kilobytes, so check its size.
 `STUB_CARGO_FLAGS=--no-default-features ./load.sh` builds the stub with all
 of core 1's code in flash.
 
@@ -72,6 +82,18 @@ uses DMA.
   link goes down.
 - Ethernet frames go to and from `rp2350-net.c` (`eth0`) through two rings
   of four slots in the I/O area.
+- **Receive backpressure.** The cyw43 driver reads every frame the chip
+  has waiting in one pass, but its channel holds four and it drops the
+  rest. Access points send bursts of more than four frames, so TCP into
+  the board lost frames on every window and backed off: about 500 KiB/s,
+  with a hundred out-of-order segments per 2 MB. `PioSpi` now hides "F2
+  packet available" in the status word while the channel is full
+  (`rx_gate`), and the chip keeps the frames until there is room. If Linux
+  leaves its ring full for 200 ms (eth0 down), core 1 throws frames away
+  instead, so the chip's events and ioctl replies still get through. Three
+  words at `DBG + 0x4c` (0x2006b84c) count data frames read, frames held
+  in the chip, and frames thrown away; read them over SWD
+  (`probe-rs read --chip RP235x --protocol swd b32 0x2006b84c 3`).
 - `/sys/class/net/eth0/joins` counts joins; writing to `.../rejoin` forces
   one.
 - **Core 1 must keep up with the bus.** If polling falls behind, the RX FIFO

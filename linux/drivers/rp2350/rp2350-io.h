@@ -100,6 +100,12 @@
 #define RPIO_DBG_SD_LAST_ERR	(RPIO_DBG + 0x40)
 #define RPIO_DBG_SD_BAD_REQ	(RPIO_DBG + 0x44)
 #define RPIO_DBG_SD_SLOT_WAITS	(RPIO_DBG + 0x48)	/* read blocks that waited for a slot */
+/* Wi-Fi receive (wifi.rs, rx_gate): data frames read from the chip, times
+ * a waiting frame was left in the chip because the driver's channel was
+ * full, frames thrown away because Linux left its ring full (eth0 down) */
+#define RPIO_DBG_NET_RX_FRAMES	(RPIO_DBG + 0x4c)
+#define RPIO_DBG_NET_RX_HELD	(RPIO_DBG + 0x50)
+#define RPIO_DBG_NET_RX_DISCARDED (RPIO_DBG + 0x54)
 
 /* SD read slots: core 1 never writes Linux's RAM. It receives each block
  * of a read into one of RPIO_BLK_RD_SLOTS slots here, then sets the slot's
