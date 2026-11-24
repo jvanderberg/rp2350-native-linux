@@ -81,6 +81,16 @@ slots back.
   growth holds the mmap lock, which the swapper only ever trylocks. A
   process blocked while it holds its own mmap lock is skipped for the same
   reason.
+- **Never chosen either:** a process with a task inside a bio submission
+  (`current->bio_list` set), or holding a block plug. One example is a task
+  preempted at the `cond_resched()` in `mtd_queue_rq` while reading the
+  root filesystem. Its swap-in would run from there, and the block layer
+  would only queue the swap reads on that task's `bio_list`, behind the
+  submission it hasn't finished. They would never be issued, and the task
+  would wait on them for ever while holding `swap_lock`, so every other
+  swap-in, swap-out and pool lend would block behind it. As a safety net,
+  the hook kills a process that tries to swap in from inside a submission
+  anyway, with a warning, instead of hanging.
 - **Not retried at once:** a process whose swap-out was just cancelled (it
   woke during the write) isn't tried again by the shrinker or the background
   worker for 2 s. It is awake, so a second write would be cancelled too.

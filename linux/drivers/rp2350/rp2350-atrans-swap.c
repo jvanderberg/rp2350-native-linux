@@ -8,7 +8,8 @@
  *
  * Swap out (when a block for exec, fork or growth can't be found, or free
  * memory is below the "low" threshold): pick an ATRANS process none of
- * whose tasks is current or inside swap code (stopped ones first, then
+ * whose tasks is current, inside swap code or inside a bio submission
+ * (mm_idle: its swap-in couldn't issue I/O) (stopped ones first, then
  * blocked ones, then runnable ones not swapped in during the last second;
  * each by the time they last ran), take its mmap lock (trylock: a process
  * blocked while holding it is skipped; growth holds it throughout), write
@@ -448,7 +449,13 @@ static bool mm_idle(struct mm_struct *mm, unsigned int *ntasks, unsigned long *s
 	for_each_process_thread(g, t) {
 		if (t->mm != mm)
 			continue;
-		if (t == current || test_ti_thread_flag(task_thread_info(t), TIF_ATRANS_SWAP)) {
+		/* Inside a bio submission (bio_list: e.g. preempted at the
+		 * cond_resched() in mtd_queue_rq) or with a plug: its swap-in
+		 * would submit the swap reads from there, and they would only
+		 * be queued on its bio_list behind the submission it is in the
+		 * middle of, never issued, with swap_lock held for ever. */
+		if (t == current || test_ti_thread_flag(task_thread_info(t), TIF_ATRANS_SWAP) ||
+		    t->bio_list || t->plug) {
 			dg.sk_busy++;
 			return false;
 		}
@@ -1046,6 +1053,15 @@ void rp2350_atrans_swap_resume(void)
 
 	swap_get();
 	for (tries = 0;; tries++) {
+		/* mm_idle() never picks a task inside a bio submission: its
+		 * swap reads would wait on its own bio_list for ever, holding
+		 * swap_lock (see there). Kill it rather than hang every
+		 * swapper behind it. */
+		if (WARN_ON_ONCE(current->bio_list)) {
+			if (a->swap && a->swap->state == SW_SWAPPED)
+				swap_kill(mm, "swapped out inside a bio submission");
+			break;
+		}
 		err = swap_in(mm);
 		if (!err || !a->swap || a->swap->state != SW_SWAPPED)
 			break;		/* in, or swapoff dealt with it meanwhile */
