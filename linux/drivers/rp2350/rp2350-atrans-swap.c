@@ -450,10 +450,13 @@ static bool mm_idle(struct mm_struct *mm, unsigned int *ntasks, unsigned long *s
 		if (t->mm != mm)
 			continue;
 		/* Inside a bio submission (bio_list: e.g. preempted at the
-		 * cond_resched() in mtd_queue_rq) or with a plug: its swap-in
-		 * would submit the swap reads from there, and they would only
-		 * be queued on its bio_list behind the submission it is in the
-		 * middle of, never issued, with swap_lock held for ever. */
+		 * cond_resched() in mtd_queue_rq): its swap-in would submit
+		 * the swap reads from there, and they would only be queued on
+		 * its bio_list behind the submission it is in the middle of,
+		 * never issued, with swap_lock held for ever. A plug alone
+		 * can't do that (swap_rw's wait_for_completion_io() flushes
+		 * it); a task with one is skipped too, as one in the middle
+		 * of block I/O, which costs only a later victim. */
 		if (t == current || test_ti_thread_flag(task_thread_info(t), TIF_ATRANS_SWAP) ||
 		    t->bio_list || t->plug) {
 			dg.sk_busy++;

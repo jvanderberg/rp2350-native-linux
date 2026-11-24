@@ -90,10 +90,12 @@ uses DMA.
   packet available" in the status word while the channel is full
   (`rx_gate`), and the chip keeps the frames until there is room. If Linux
   leaves its ring full for 200 ms (eth0 down), core 1 throws frames away
-  instead, so the chip's events and ioctl replies still get through. Three
-  words at `DBG + 0x4c` (0x2006b84c) count data frames read, frames held
-  in the chip, and frames thrown away; read them over SWD
-  (`probe-rs read --chip RP235x --protocol swd b32 0x2006b84c 3`).
+  instead, so the chip's events and ioctl replies still get through. The
+  driver's `receive` needs a free transmit slot too, so while the transmit
+  side is full core 1 can't see the channel; then the gate stays open, as
+  the transmit side drains only on the credit that comes with what is
+  read. `/sys/class/net/eth0/radio_stats` counts data frames read, polls
+  that left a frame in the chip, and frames thrown away.
 - **Transmit** is scatter-gather with checksum offload, both done by
   `rpnet_xmit` on core 0. It gathers the frame's pieces into its ring slot
   (SRAM) and sums the TCP/UDP checksum over that copy. Without these

@@ -344,8 +344,9 @@ const RX_CHANNEL_SLOTS: u32 = 4;
 static RX_ROOM: AtomicU32 = AtomicU32::new(RX_CHANNEL_SLOTS);
 /// Data frames read from the chip (free-running).
 static RX_READ: AtomicU32 = AtomicU32::new(0);
-/// Status words with a frame waiting that the gate hid.
-static RX_HELD: AtomicU32 = AtomicU32::new(0);
+/// The gate hid a waiting frame during this poll of the driver
+/// (`RadioService::poll` counts such polls in `DBG_NET_RX_HELD`).
+static RX_HELD: AtomicBool = AtomicBool::new(false);
 
 const STATUS_F2_PKT_AVAILABLE: u32 = 1 << 8;
 /// A 32-bit read of the bus function's status register (cyw43's `cmd_word`:
@@ -363,9 +364,7 @@ const SDPCM_CHANNEL_DATA: u32 = 2;
 #[unsafe(link_section = ".data.ram_func.rx_gate")]
 fn rx_gate(status: u32) -> u32 {
     if status & STATUS_F2_PKT_AVAILABLE != 0 && RX_ROOM.load(Ordering::Relaxed) == 0 {
-        let n = RX_HELD.load(Ordering::Relaxed).wrapping_add(1);
-        RX_HELD.store(n, Ordering::Relaxed);
-        io::wr(io::DBG_NET_RX_HELD, n);
+        RX_HELD.store(true, Ordering::Relaxed);
         status & !STATUS_F2_PKT_AVAILABLE
     } else {
         status
@@ -754,7 +753,13 @@ pub struct RadioService<F> {
     /// `RX_READ`), and frames thrown away because Linux took none.
     rx_taken: u32,
     rx_discarded: u32,
-    /// Linux's receive head when last seen, and when it last moved.
+    /// Polls in which the gate left a frame in the chip.
+    rx_held: u32,
+    /// The last drain couldn't see the channel: `receive` needs a free
+    /// transmit slot too, and there was none (see `set_rx_room`).
+    rx_unknown: bool,
+    /// Linux's full receive ring: its head when first seen full, and when
+    /// (0: it had room last time).
     rx_head: u32,
     rx_head_at: u64,
 }
@@ -777,25 +782,35 @@ impl<F: Future<Output = ()>> RadioService<F> {
             keepalive_us: u64::from(KEEPALIVE_S) * 1_000_000,
             rx_taken: 0,
             rx_discarded: 0,
+            rx_held: 0,
+            rx_unknown: false,
             rx_head: 0,
             rx_head_at: 0,
         }
     }
 
     /// Room in the driver's receive channel, for `rx_gate`: its slots less
-    /// the data frames read and not yet taken.
+    /// the data frames read and not yet taken. When the last drain couldn't
+    /// see the channel (the transmit side was full), the gate stays open:
+    /// the driver reads, and may drop frames past a full channel as it did
+    /// before the gate, because the transmit side drains only on the credit
+    /// the chip sends with what is read, and a closed gate would wait on it
+    /// for ever.
+    #[inline(always)]
     fn set_rx_room(&self) {
         let queued = RX_READ.load(Ordering::Relaxed).wrapping_sub(self.rx_taken).min(RX_CHANNEL_SLOTS);
-        RX_ROOM.store(RX_CHANNEL_SLOTS - queued, Ordering::Relaxed);
+        let room = if self.rx_unknown { RX_CHANNEL_SLOTS } else { RX_CHANNEL_SLOTS - queued };
+        RX_ROOM.store(room, Ordering::Relaxed);
     }
 
-    /// Whether Linux has left a full receive ring alone for
-    /// `LINUX_RX_STALL_US` (eth0 down, or not up yet): frames are then
+    /// With Linux's receive ring full: whether Linux has left it alone
+    /// for `LINUX_RX_STALL_US` (eth0 down, or not up yet). Frames are then
     /// thrown away, as the driver used to, so they can't hold back the
     /// chip's events and ioctl replies behind them.
-    fn linux_rx_stalled(&mut self, room: bool) -> bool {
+    #[inline(always)]
+    fn linux_rx_stalled(&mut self) -> bool {
         let (head, now) = (io::rd(io::NET_RX_HEAD), io::now_us());
-        if room || head != self.rx_head || self.rx_head_at == 0 {
+        if head != self.rx_head || self.rx_head_at == 0 {
             self.rx_head = head;
             self.rx_head_at = now;
             return false;
@@ -826,6 +841,9 @@ impl<F: Future<Output = ()>> RadioService<F> {
         }
     }
 
+    /// Inlined into `poll`, which core1.x puts in SRAM: the driver's
+    /// runner is polled from here.
+    #[inline(always)]
     fn poll_driver(&mut self) {
         let mut cx = Context::from_waker(waker());
         // SAFETY: `fut` never moves (see the field).
@@ -853,6 +871,10 @@ impl<F: Future<Output = ()>> RadioService<F> {
         }
         self.set_rx_room();
         self.poll_driver();
+        if RX_HELD.swap(false, Ordering::Relaxed) {
+            self.rx_held = self.rx_held.wrapping_add(1);
+            io::wr(io::DBG_NET_RX_HELD, self.rx_held);
+        }
         if RADIO.load(Ordering::Relaxed) == RADIO_STARTING && !READY.load(Ordering::Relaxed) {
             let now = io::now_us();
             if self.t0 == 0 {
@@ -869,15 +891,24 @@ impl<F: Future<Output = ()>> RadioService<F> {
         // radio -> Linux, while there's room (the rest waits in the driver,
         // and then in the chip: `rx_gate`)
         let mut got = false;
+        self.rx_unknown = false;
         loop {
             let room = io::RX.has_room();
-            if !self.linux_rx_stalled(room) && !room {
+            if room {
+                self.rx_head_at = 0;
+            } else if !self.linux_rx_stalled() {
                 break;
             }
             let Some((rx, _tx)) = d.receive(&mut cx) else {
-                // the channel is empty: whatever `RX_READ` counted that
-                // never reached it (a frame the driver couldn't parse) is gone
-                self.rx_taken = RX_READ.load(Ordering::Relaxed);
+                // `receive` also needs a free transmit slot
+                if d.transmit(&mut cx).is_some() {
+                    // the channel is empty: whatever `RX_READ` counted that
+                    // never reached it (a frame the driver couldn't parse)
+                    // is gone
+                    self.rx_taken = RX_READ.load(Ordering::Relaxed);
+                } else {
+                    self.rx_unknown = true;
+                }
                 break;
             };
             self.rx_taken = self.rx_taken.wrapping_add(1);

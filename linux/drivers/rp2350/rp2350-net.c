@@ -141,10 +141,11 @@ static netdev_tx_t rpnet_xmit(struct sk_buff *skb, struct net_device *dev)
 		/* NETIF_F_HW_CSUM: the sum from csum_start to the end, the
 		 * field (holding the pseudo-header's sum) included, as
 		 * skb_checksum_help does it, but over the copy in SRAM */
-		unsigned int start = skb_checksum_start_offset(skb);
+		int start = skb_checksum_start_offset(skb);
 		unsigned int field = start + skb->csum_offset;
 
-		if (WARN_ON_ONCE(field + sizeof(__sum16) > skb->len)) {
+		if (WARN_ON_ONCE(start < 0 || start >= skb->len ||
+				 field + sizeof(__sum16) > skb->len)) {
 			dev->stats.tx_dropped++;
 			dev_kfree_skb_any(skb);
 			return NETDEV_TX_OK;
@@ -262,8 +263,22 @@ static ssize_t core1_stats_show(struct device *d, struct device_attribute *attr,
 }
 static DEVICE_ATTR_RO(core1_stats);
 
+/* core 1's Wi-Fi receive: data frames read from the radio, polls of the
+ * radio's driver that left a frame in the radio for want of room (rx_gate),
+ * frames thrown away because eth0 took none */
+static ssize_t radio_stats_show(struct device *d, struct device_attribute *attr, char *buf)
+{
+	struct rpnet *p = netdev_priv(to_net_dev(d));
+
+	return sysfs_emit(buf, "rx %u held %u discarded %u\n",
+			  readl(p->io + RPIO_DBG_NET_RX_FRAMES), readl(p->io + RPIO_DBG_NET_RX_HELD),
+			  readl(p->io + RPIO_DBG_NET_RX_DISCARDED));
+}
+static DEVICE_ATTR_RO(radio_stats);
+
 static struct attribute *rpnet_attrs[] = {
 	&dev_attr_rejoins.attr, &dev_attr_joins.attr, &dev_attr_core1_stats.attr,
+	&dev_attr_radio_stats.attr,
 	&dev_attr_rejoin.attr, NULL
 };
 static const struct attribute_group rpnet_group = { .attrs = rpnet_attrs };

@@ -8,7 +8,8 @@
  * In it: the SD card path (the sdcard crate, sd.rs, and its CRC table), the
  * USB console (usb-device, usbd-serial, the HAL's USB driver, console.rs),
  * core 1's loop, the mem* routines, and the radio service's poll (the
- * cyw43 driver's runner is inlined into it: 9 KB). The rest of the Wi-Fi
+ * cyw43 driver's runner is inlined into it, through `poll_driver`, which
+ * is #[inline(always)] for that: 9 KB). The rest of the Wi-Fi
  * driver (joins, bring-up, ~10 KB) stays in flash, and its firmware is
  * read through the uncached alias (wifi.rs, `uncached`). Symbols are v0-mangled
  * (`_RNv...6sdcard...`), hence the length-prefixed names. */
