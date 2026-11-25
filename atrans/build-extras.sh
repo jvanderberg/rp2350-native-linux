@@ -16,6 +16,9 @@ mkdir -p "$B" "$OUT/usr/bin" "$OUT/usr/libexec/atrans-tests"
 
 cc() { echo "  CC $*" | cut -c1-120; $CC $CFLAGS "$@" $LDFLAGS; }
 
+# xauth (atrans/xauth.c): dropbear runs it to store an X11 forwarding's cookie
+cc -o "$OUT/usr/bin/xauth" /native/atrans/xauth.c
+
 # ATRANS tests (tests/README in this directory)
 for t in "$T"/*.c; do
   n=$(basename "$t" .c)

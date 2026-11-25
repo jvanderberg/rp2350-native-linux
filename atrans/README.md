@@ -115,8 +115,8 @@ tar -xzf out/atrans-root.tar.gz -C "$TARGET_DIR"
 
 | Path | Contents |
 |---|---|
-| `usr/bin` | tmux, nano, mg, less, bc, dc, ncdu, lua, luac, htop, rz/sz (lrz/lsz/rb/sb/rx/sx), clear, tput, tset/reset; Dropbear's client applets (`dbclient`, `ssh`, `scp`, `dropbearkey`, `dropbearconvert`, symlinks to `../sbin/dropbear`); `claude-remote`, `claude-guest-mcp` |
-| `usr/sbin/dropbear` | Dropbear, one multi-call binary. It is built with public-key logins only and no re-exec per connection (`dropbear-localoptions.h`). |
+| `usr/bin` | tmux, nano, mg, less, bc, dc, ncdu, lua, luac, htop, rz/sz (lrz/lsz/rb/sb/rx/sx), clear, tput, tset/reset; Dropbear's client applets (`dbclient`, `ssh`, `scp`, `dropbearkey`, `dropbearconvert`, symlinks to `../sbin/dropbear`); `xauth` (`xauth.c`: add, remove and list, for dropbear's X11 forwarding); `claude-remote`, `claude-guest-mcp` |
+| `usr/sbin/dropbear` | Dropbear, one multi-call binary. It is built with public-key logins only, no re-exec per connection, and X11 forwarding (`dropbear-localoptions.h`). |
 | `etc/init.d/S50dropbear`, `etc/default/dropbear`, `etc/dropbear -> /home/dropbear` | SSH: host keys are made at the first connection and kept in `/home/dropbear`, so they last across reboots. |
 | `usr/share/terminfo` | xterm, xterm-256color, tmux, tmux-256color, screen, screen-256color, vt100/102/220, linux, ansi, putty, dumb |
 | `usr/libexec/atrans-tests` | `hello`, `selftest`, `run-tests.sh` (below) |

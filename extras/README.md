@@ -54,9 +54,17 @@ network link and sharp at any window size; it takes `-demo` too. `xpulse` is
 `pulse` in a window, with graphs, a process table sorted by clicking a
 column, and a right-click menu to signal a process; an update sends only
 what changed, 1-4 KB. All three use `x11.h`, which speaks the X11 protocol
-itself, so no Xlib is needed; it is the window counterpart of `term.h`. On the machine with the screen, allow
-network clients (XQuartz: Settings > Security) and run
-`xhost +BOARD-ADDRESS`, then on the board:
+itself, so no Xlib is needed; it is the window counterpart of `term.h`. The
+simplest way to run one is through SSH's X11 forwarding, from the machine
+with the screen:
+
+```
+$ ssh -Y root@BOARD-ADDRESS /mnt/sd/extras/demos/xmaze -demo
+```
+
+Or, without SSH: on the machine with the screen, allow network clients
+(XQuartz: Settings > Security) and run `xhost +BOARD-ADDRESS`, then on the
+board:
 
 ```
 # DISPLAY=SCREEN-ADDRESS:0 ./xmaze -demo

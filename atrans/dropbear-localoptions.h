@@ -5,3 +5,6 @@
  * every login. */
 #define DROPBEAR_SVR_PASSWORD_AUTH 0
 #define DROPBEAR_REEXEC 0
+/* X11 forwarding (ssh -X/-Y): a login gets DISPLAY=localhost:10.0, and
+ * /usr/bin/xauth (xauth.c) stores the cookie the X client must send. */
+#define DROPBEAR_X11FWD 1

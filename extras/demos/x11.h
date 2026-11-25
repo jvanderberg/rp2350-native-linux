@@ -85,9 +85,11 @@
  * in x_write_us (microseconds).
  *
  * Needs a TrueColor display (any current server, XQuartz included) that
- * lets this machine connect: on the machine with the screen, allow network
- * clients (XQuartz: Settings > Security) and run `xhost +THIS-ADDRESS`.
- * Xauthority cookies are not supported.
+ * lets this machine connect. Either log in with `ssh -Y` (or -X), which sets
+ * DISPLAY and stores a cookie with xauth, or, on the machine with the
+ * screen, allow network clients (XQuartz: Settings > Security) and run
+ * `xhost +THIS-ADDRESS`. A MIT-MAGIC-COOKIE-1 for the display in
+ * $XAUTHORITY (default ~/.Xauthority) is sent if there is one.
  */
 #ifndef DEMO_X11_H
 #define DEMO_X11_H
@@ -534,6 +536,80 @@ static int xi_connect(const char *d)
     return xi_connect_tcp(host, 6000 + atoi(colon + 1));
 }
 
+/* The MIT-MAGIC-COOKIE-1 for display d (connected on xi_fd) from the
+ * authority file, looked up as Xlib does: a local or loopback connection
+ * matches family Local with this host's name, a TCP one family Internet
+ * with the server's IPv4 address; family Wild matches any. Returns its
+ * length (at most 64 bytes, into cookie), or 0 if there is none. */
+static size_t xi_cookie(const char *d, unsigned char *cookie)
+{
+    static const char proto[] = "MIT-MAGIC-COOKIE-1";
+    const char *colon = strrchr(d, ':'), *file = getenv("XAUTHORITY"), *home;
+    char path[512], self[256] = "";
+    unsigned char peer[4], f[4][256];
+    unsigned int flen[4];
+    size_t numlen, found = 0;
+    int local = 1;
+    struct sockaddr_storage ss;
+    socklen_t sl = sizeof ss;
+    FILE *fp;
+
+    if (colon == NULL)
+        return 0;
+    for (numlen = 0; colon[1 + numlen] >= '0' && colon[1 + numlen] <= '9'; numlen++)
+        ;
+    if (getpeername(xi_fd, (struct sockaddr *)&ss, &sl) == 0) {
+        if (ss.ss_family == AF_INET) {
+            memcpy(peer, &((struct sockaddr_in *)&ss)->sin_addr, 4);
+            local = peer[0] == 127;
+        } else if (ss.ss_family == AF_INET6) {
+            local = IN6_IS_ADDR_LOOPBACK(&((struct sockaddr_in6 *)&ss)->sin6_addr);
+        }
+    }
+    gethostname(self, sizeof self - 1);
+    if (file == NULL || *file == '\0') {
+        if ((home = getenv("HOME")) == NULL)
+            return 0;
+        snprintf(path, sizeof path, "%s/.Xauthority", home);
+        file = path;
+    }
+    if ((fp = fopen(file, "rb")) == NULL)
+        return 0;
+    for (;;) {
+        int hi = getc(fp), lo = getc(fp), i;
+        unsigned int family;
+
+        if (hi == EOF || lo == EOF)
+            break;
+        family = (unsigned int)(hi << 8 | lo);
+        /* address, display number, protocol name, data */
+        for (i = 0; i < 4; i++) {
+            unsigned int n;
+
+            if ((hi = getc(fp)) == EOF || (lo = getc(fp)) == EOF)
+                break;
+            n = (unsigned int)(hi << 8 | lo);
+            flen[i] = n;
+            if (n > sizeof f[i] ? fseek(fp, (long)n, SEEK_CUR) != 0 : fread(f[i], 1, n, fp) != n)
+                break;
+        }
+        if (i < 4)
+            break;
+        if (flen[1] != numlen || memcmp(f[1], colon + 1, numlen) != 0 ||
+            flen[2] != sizeof proto - 1 || memcmp(f[2], proto, sizeof proto - 1) != 0 || flen[3] > 64)
+            continue;
+        if (family == 65535 ||
+            (local && family == 256 && flen[0] == strlen(self) && memcmp(f[0], self, flen[0]) == 0) ||
+            (!local && family == 0 && flen[0] == 4 && memcmp(f[0], peer, 4) == 0)) {
+            memcpy(cookie, f[3], flen[3]);
+            found = flen[3];
+            break;
+        }
+    }
+    fclose(fp);
+    return found;
+}
+
 /* Pick what we need out of the set-up reply. */
 static int xi_parse_setup(const unsigned char *b, size_t len)
 {
@@ -578,8 +654,8 @@ static int xi_parse_setup(const unsigned char *b, size_t len)
 /* Connect to display (NULL: $DISPLAY). Prints the reason and returns -1 on failure. */
 static inline int x_open(const char *display)
 {
-    unsigned char head[8], b[32], *setup, *syms = NULL;
-    size_t len;
+    unsigned char head[8], b[32], *setup, *syms = NULL, cookie[64];
+    size_t len, clen;
     const char *d = display != NULL ? display : getenv("DISPLAY");
 
     if (d == NULL || *d == '\0') {
@@ -590,13 +666,24 @@ static inline int x_open(const char *display)
         fprintf(stderr, "x11: can't connect to the X server at %s\n", d);
         return -1;
     }
-    xi_put8('l');                       /* little-endian, protocol 11.0, no auth */
+    clen = xi_cookie(d, cookie);
+    xi_put8('l');                       /* little-endian, protocol 11.0 */
     xi_put8(0);
     xi_put16(11);
     xi_put16(0);
+    xi_put16(clen ? 18 : 0);            /* MIT-MAGIC-COOKIE-1, if there is one */
+    xi_put16((unsigned int)clen);
     xi_put16(0);
-    xi_put16(0);
-    xi_put16(0);
+    if (clen) {
+        for (const char *p = "MIT-MAGIC-COOKIE-1"; *p != '\0'; p++)
+            xi_put8((unsigned char)*p);
+        xi_put8(0);                     /* 18 bytes, padded to 20 */
+        xi_put8(0);
+        for (size_t i = 0; i < clen; i++)
+            xi_put8(cookie[i]);
+        while (xi_out_len & 3)
+            xi_put8(0);
+    }
     x_flush();
     if (xi_read(head, 8) < 0) {
         fprintf(stderr, "x11: the X server at %s hung up\n", d);
@@ -610,7 +697,7 @@ static inline int x_open(const char *display)
     }
     if (head[0] != 1) {
         fprintf(stderr, "x11: %s refused the connection: %.*s\n"
-                "x11: on that machine, try: xhost +ADDRESS-OF-THIS-ONE\n",
+                "x11: log in with ssh -Y, or on that machine try: xhost +ADDRESS-OF-THIS-ONE\n",
                 d, head[0] == 0 ? head[1] : (int)len, (char *)setup);
         free(setup);
         return -1;
