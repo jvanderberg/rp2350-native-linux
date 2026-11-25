@@ -539,15 +539,16 @@ static int xi_connect(const char *d)
 /* The MIT-MAGIC-COOKIE-1 for display d (connected on xi_fd) from the
  * authority file, looked up as Xlib does: a local or loopback connection
  * matches family Local with this host's name, a TCP one family Internet
- * with the server's IPv4 address; family Wild matches any. Returns its
- * length (at most 64 bytes, into cookie), or 0 if there is none. */
+ * (IPv4) or Internet6 with the server's address; family Wild matches any.
+ * DISPLAY=THIS-HOST'S-NAME:N counts as local, as xauth stores it so.
+ * Returns its length (at most 64 bytes, into cookie), or 0 if none. */
 static size_t xi_cookie(const char *d, unsigned char *cookie)
 {
     static const char proto[] = "MIT-MAGIC-COOKIE-1";
     const char *colon = strrchr(d, ':'), *file = getenv("XAUTHORITY"), *home;
     char path[512], self[256] = "";
-    unsigned char peer[4], f[4][256];
-    unsigned int flen[4];
+    unsigned char peer[16], f[4][256];
+    unsigned int flen[4], peerlen = 0, peerfamily = 0;
     size_t numlen, found = 0;
     int local = 1;
     struct sockaddr_storage ss;
@@ -561,12 +562,26 @@ static size_t xi_cookie(const char *d, unsigned char *cookie)
     if (getpeername(xi_fd, (struct sockaddr *)&ss, &sl) == 0) {
         if (ss.ss_family == AF_INET) {
             memcpy(peer, &((struct sockaddr_in *)&ss)->sin_addr, 4);
+            peerlen = 4;
             local = peer[0] == 127;
         } else if (ss.ss_family == AF_INET6) {
-            local = IN6_IS_ADDR_LOOPBACK(&((struct sockaddr_in6 *)&ss)->sin6_addr);
+            const struct in6_addr *a = &((struct sockaddr_in6 *)&ss)->sin6_addr;
+
+            if (IN6_IS_ADDR_V4MAPPED(a)) {
+                memcpy(peer, a->s6_addr + 12, 4);
+                peerlen = 4;
+                local = peer[0] == 127;
+            } else {
+                memcpy(peer, a->s6_addr, 16);
+                peerlen = 16;
+                peerfamily = 6;
+                local = IN6_IS_ADDR_LOOPBACK(a);
+            }
         }
     }
     gethostname(self, sizeof self - 1);
+    if (!local && (size_t)(colon - d) == strlen(self) && memcmp(d, self, strlen(self)) == 0)
+        local = 1;
     if (file == NULL || *file == '\0') {
         if ((home = getenv("HOME")) == NULL)
             return 0;
@@ -600,7 +615,8 @@ static size_t xi_cookie(const char *d, unsigned char *cookie)
             continue;
         if (family == 65535 ||
             (local && family == 256 && flen[0] == strlen(self) && memcmp(f[0], self, flen[0]) == 0) ||
-            (!local && family == 0 && flen[0] == 4 && memcmp(f[0], peer, 4) == 0)) {
+            (!local && peerlen && family == peerfamily && flen[0] == peerlen &&
+             memcmp(f[0], peer, peerlen) == 0)) {
             memcpy(cookie, f[3], flen[3]);
             found = flen[3];
             break;

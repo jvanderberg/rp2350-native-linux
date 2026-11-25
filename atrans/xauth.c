@@ -18,7 +18,11 @@
  * DISPLAY is HOST:N[.S]. unix:N, :N, localhost:N and this machine's own name
  * are stored as Xlib looks them up: family Local, with the host name as the
  * address. A dotted IPv4 address is family Internet. The file is $XAUTHORITY,
- * else ~/.Xauthority, and is replaced in one rename.
+ * else ~/.Xauthority. Changes are made under a lock (flock on FILE-l, which
+ * stays), so logins at the same moment don't lose each other's cookies, and
+ * the file is replaced in one rename. A file that can't be read, or ends in
+ * the middle of an entry, is left alone: commands that would change it fail.
+ * -q is accepted, as dropbear passes it; this xauth prints nothing anyway.
  *
  * Built into the image by build-extras.sh; on the board: cc -o xauth xauth.c
  */
@@ -29,6 +33,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -47,7 +52,7 @@ struct entry {
 };
 
 static struct entry *entries;
-static int nentries, changed, quiet;
+static int nentries, changed, unreadable;
 static const char *file;
 
 static void *xmalloc(size_t n)
@@ -66,11 +71,6 @@ static void set_field(struct field *f, const void *s, size_t len)
     f->len = (unsigned short)len;
     f->s = xmalloc(len);
     memcpy(f->s, s, len);
-}
-
-static int field_is(const struct field *f, const char *s)
-{
-    return f->len == strlen(s) && memcmp(f->s, s, f->len) == 0;
 }
 
 static int read_field(FILE *fp, struct field *f)
@@ -99,44 +99,73 @@ static void free_entry(struct entry *e)
     free(e->data.s);
 }
 
+static void append_entry(const struct entry *e)
+{
+    struct entry *p = realloc(entries, (size_t)(nentries + 1) * sizeof *entries);
+
+    if (p == NULL) {
+        fprintf(stderr, "xauth: out of memory\n");
+        exit(1);
+    }
+    entries = p;
+    entries[nentries++] = *e;
+}
+
+/* Read FILE into entries. A missing file is empty; one that can't be read
+ * or is cut short sets unreadable, so it isn't written over. */
 static void load(void)
 {
     FILE *fp = fopen(file, "rb");
     struct entry e;
     int hi, lo;
 
-    if (fp == NULL)
+    if (fp == NULL) {
+        if (errno != ENOENT) {
+            fprintf(stderr, "xauth: %s: %s\n", file, strerror(errno));
+            unreadable = 1;
+        }
         return;
+    }
     while ((hi = getc(fp)) != EOF && (lo = getc(fp)) != EOF) {
         memset(&e, 0, sizeof e);
         e.family = (unsigned short)(hi << 8 | lo);
         if (read_field(fp, &e.addr) < 0 || read_field(fp, &e.number) < 0 ||
             read_field(fp, &e.name) < 0 || read_field(fp, &e.data) < 0) {
             free_entry(&e);
-            fprintf(stderr, "xauth: %s: ends in the middle of an entry; ignoring the rest\n", file);
+            fprintf(stderr, "xauth: %s: ends in the middle of an entry\n", file);
+            unreadable = 1;
             break;
         }
-        entries = realloc(entries, (size_t)(nentries + 1) * sizeof *entries);
-        if (entries == NULL) {
-            fprintf(stderr, "xauth: out of memory\n");
-            exit(1);
-        }
-        entries[nentries++] = e;
+        append_entry(&e);
+    }
+    if (ferror(fp)) {
+        fprintf(stderr, "xauth: %s: read error\n", file);
+        unreadable = 1;
     }
     fclose(fp);
 }
 
-/* Write FILE.new (mode 600) and rename it over FILE. */
+/* FILE with suffix appended (malloc'd). */
+static char *file_plus(const char *suffix)
+{
+    size_t n = strlen(file), m = strlen(suffix);
+    char *s = xmalloc(n + m + 1);
+
+    memcpy(s, file, n);
+    memcpy(s + n, suffix, m + 1);
+    return s;
+}
+
+/* Write FILE.new (mode 600, a new file: never through a link left there)
+ * and rename it over FILE. Called with the lock held. */
 static int save(void)
 {
-    size_t n = strlen(file);
-    char *tmp = xmalloc(n + 5);
+    char *tmp = file_plus(".new");
     FILE *fp;
     int fd;
 
-    memcpy(tmp, file, n);
-    memcpy(tmp + n, ".new", 5);
-    fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    unlink(tmp);
+    fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0600);
     if (fd < 0 || (fp = fdopen(fd, "wb")) == NULL) {
         fprintf(stderr, "xauth: %s: %s\n", tmp, strerror(errno));
         if (fd >= 0)
@@ -262,12 +291,7 @@ static int cmd_add(char **argv, int argc)
             changed = 1;
             return 0;
         }
-    entries = realloc(entries, (size_t)(nentries + 1) * sizeof *entries);
-    if (entries == NULL) {
-        fprintf(stderr, "xauth: out of memory\n");
-        exit(1);
-    }
-    entries[nentries++] = e;
+    append_entry(&e);
     changed = 1;
     return 0;
 }
@@ -339,12 +363,12 @@ static int run(char **argv, int argc)
 
 int main(int argc, char **argv)
 {
-    int i = 1, status = 0;
-    char *path = NULL;
+    int i = 1, status = 0, lock;
+    char *path = NULL, *lockname;
 
     for (; i < argc && argv[i][0] == '-' && argv[i][1] != '\0'; i++) {
         if (strcmp(argv[i], "-q") == 0)
-            quiet = 1;
+            ;
         else if (strcmp(argv[i], "-f") == 0 && i + 1 < argc)
             file = argv[++i];
         else {
@@ -366,6 +390,12 @@ int main(int argc, char **argv)
         strcat(path, "/.Xauthority");
         file = path;
     }
+    /* held until exit; if the lock file can't be made, neither can FILE.new */
+    lockname = file_plus("-l");
+    lock = open(lockname, O_RDWR | O_CREAT | O_NOFOLLOW, 0600);
+    if (lock >= 0)
+        flock(lock, LOCK_EX);
+    free(lockname);
     load();
 
     if (i < argc) {
@@ -374,16 +404,32 @@ int main(int argc, char **argv)
         char line[1024], *words[8];
 
         while (fgets(line, sizeof line, stdin) != NULL) {
-            int n = 0;
+            int n = 0, c;
+            char *w;
 
-            for (char *w = strtok(line, " \t\r\n"); w != NULL && n < 8; w = strtok(NULL, " \t\r\n"))
-                words[n++] = w;
-            if (n > 0 && words[0][0] != '#' && run(words, n) < 0)
+            if (strchr(line, '\n') == NULL && !feof(stdin)) {
+                fprintf(stderr, "xauth: line too long; skipped\n");
+                while ((c = getchar()) != EOF && c != '\n')
+                    ;
                 status = 1;
+                continue;
+            }
+            for (w = strtok(line, " \t\r\n"); w != NULL && n < 8; w = strtok(NULL, " \t\r\n"))
+                words[n++] = w;
+            if (w != NULL) {
+                fprintf(stderr, "xauth: too many words in \"%s ...\"\n", words[0]);
+                status = 1;
+            } else if (n > 0 && words[0][0] != '#' && run(words, n) < 0) {
+                status = 1;
+            }
         }
     }
-    if (changed && save() < 0)
+    if (changed && unreadable) {
+        fprintf(stderr, "xauth: not changing %s, which couldn't be read in full\n", file);
         status = 1;
+    } else if (changed && save() < 0) {
+        status = 1;
+    }
     free(path);
     return status;
 }
