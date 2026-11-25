@@ -183,6 +183,12 @@ in `/root/.ssh/authorized_keys` on the board (from the console), then
 `ssh root@ADDRESS`. Host keys are made at the first connection and kept in
 `/home/dropbear`.
 
+X11 forwarding works: `ssh -Y root@ADDRESS PROGRAM` shows an X program
+from the board on the host's X server (XQuartz on a Mac). The login gets
+its own display, `DISPLAY=localhost:10.0` for the first (`:11.0` for a
+second at the same time, and so on), and `/usr/bin/xauth` (`atrans/xauth.c`) stores the session's cookie
+in `~/.Xauthority`, where the X client must find it and send it.
+
 **Telnet.** `telnet ADDRESS`, root with no password. It is unencrypted and
 unauthenticated, so use it only on a network you trust.
 
