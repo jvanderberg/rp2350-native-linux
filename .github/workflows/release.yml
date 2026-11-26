@@ -8,7 +8,6 @@ name: release
 on:
   push:
     tags: ["v*"]
-    branches: [ci-release] # TEMPORARY: to test the workflow before it is on main
   workflow_dispatch:
 
 permissions:

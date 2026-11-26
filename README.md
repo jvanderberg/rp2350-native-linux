@@ -88,8 +88,9 @@ Buildroot is cloned into `src/buildroot` at the release pinned in
 `rp2350-native-work` (`WORK_VOLUME=name` picks another); outputs go in
 `out/`. None of these are in git.
 
-`./build-all.sh` runs the whole sequence. It takes about 2–3 hours the first
-time, most of it the two Buildroot toolchains, and each step is
+`./build-all.sh` runs the whole sequence. From nothing it takes about an
+hour on a GitHub 4-core arm64 runner (56 minutes: 30 for the native
+Buildroot, 21 for the ATRANS toolchain, 5 for the rest), and each step is
 incremental after that:
 
 1. `./run-build.sh rootfs`: the native Buildroot (gcc, uClibc-ng FDPIC,
