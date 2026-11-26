@@ -2,8 +2,8 @@
 # board-session.sh LOG [CMD...]: one board test session for tcc: take the
 # board lock, write the romfs and the kernel (board-load.sh), log in, set
 # tcc up from the romfs, run each CMD (default: hello world, the repo's
-# tcc tests with board-run.sh, the build.sh of extras/games, samples and
-# pulse), release the lock. The console goes to LOG; each CMD's exit
+# tcc tests with board-run.sh, the build.sh of extras/games, maze, samples
+# and pulse), release the lock. The console goes to LOG; each CMD's exit
 # status is printed as @@R<status>.
 set -u
 cd "$(dirname "$0")/.."
@@ -16,7 +16,7 @@ if [ $# = 0 ]; then
 		"cd /tmp && printf '#include <stdio.h>\\nint main(void) { printf(\"hello from tcc\\\\n\"); return 0; }\\n' > hello.c && cc hello.c && ./a.out && tcc -v" \
 		"cd /tmp/test && sh board-run.sh" \
 		"cd /tmp/extras/games && sh -x ./build.sh stackfall" \
-		"cd /tmp/extras && cat /proc/uptime && games/build.sh && samples/build.sh && pulse/build.sh && cat /proc/uptime && ls -l games/stackfall games/rain games/asteroids games/life pulse/pulse samples/bogomips" \
+		"cd /tmp/extras && cat /proc/uptime && games/build.sh && maze/build.sh && samples/build.sh && pulse/build.sh && cat /proc/uptime && ls -l games/stackfall games/rain games/asteroids games/life maze/maze maze/xmaze pulse/pulse pulse/xpulse samples/bogomips samples/mandel samples/xeyes" \
 		"cd /tmp/extras/samples && ./bogomips | tail -2"
 fi
 tools/board-lock.sh acquire $OWNER 7200 || exit 1

@@ -181,7 +181,6 @@ holds the whole image.
 | bc / dc | 73 / 54 KB | 67 / 48 KiB | 5 / 5 KiB | |
 | rz / sz | 96 / 90 KB | 90 / 83 KiB | 6 / 7 KiB | |
 | clear, tput, tset | 103–111 KB | 96–104 KiB | 4–6 KiB | ncurses' terminfo reader |
-| demos | 20–53 KB | 16–48 KiB | 2–5 KiB | |
 | claude-guest-mcp | 39 KB | 34 KiB | 1 KiB | plus its 128 KiB arena (mmap) and the shells it runs |
 | hello | 9 KB | 4 KiB | 2 KiB | |
 

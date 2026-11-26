@@ -3,8 +3,9 @@
 # native-build.sh: a romfs image, out/tcc-romfs.img, for testing a tcc
 # build on the board without rebuilding the root file system.
 # It holds the tcc tree (ROOT, default /native/out/tcc-root), the repo's
-# tcc tests (test/), extras/lib, games, samples and pulse (extras/, laid
-# out as in the repo so their ../lib includes work) and setup.sh, which
+# tcc tests (test/), the sources and build scripts of extras/games, maze,
+# samples and pulse with lib's headers (laid out as in the repo so their
+# ../lib includes work) and setup.sh, which
 # mounts the romfs and links the tree into place (/usr/bin/tcc, cc,
 # /usr/lib/tcc, /usr/include, /usr/lib/*). board-load.sh writes it to
 # flash at 0x10a00000; the kernel needs an "mtd-rom" node there whose MTD device
@@ -19,8 +20,17 @@ cp -a "$ROOT/." $W/
 mkdir $W/test $W/extras
 cp /native/tcc/test/*.c /native/tcc/test/*.h \
 	/native/tcc/test/*.expect /native/tcc/test/run.sh $W/test/
-cp -r /native/extras/lib /native/extras/games /native/extras/samples \
-	/native/extras/pulse $W/extras/
+# sources only: /native is the live repo, where a host build may have left
+# binaries
+mkdir $W/extras/lib
+cp /native/extras/lib/*.h $W/extras/lib/
+for d in games maze samples pulse; do
+	mkdir $W/extras/$d
+	cp /native/extras/$d/*.c /native/extras/$d/build.sh $W/extras/$d/
+	for h in /native/extras/$d/*.h; do
+		if [ -e "$h" ]; then cp "$h" $W/extras/$d/; fi
+	done
+done
 # the same tests built on the host, to tell the board's compiler from the
 # board's run time: by the cross tcc (test/x-tcc) and by the userland's
 # gcc (test/x-gcc), if they are there
