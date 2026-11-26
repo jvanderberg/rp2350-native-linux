@@ -11,5 +11,15 @@ cd "$(dirname "$0")"
 . ../tools/preflight.sh
 docker build -q -t rp2350-native-tcc docker >/dev/null
 docker volume create $WORK_VOLUME >/dev/null
-exec docker run --rm -i -e SYSROOT -e TARGET_CC -e XB -e NB -e BOARD_LIBC -e LAYOUT -e ROOT -v "$PWD/..:/native" -v "$PWD/tinycc:/tcc-src" \
-	-v $WORK_VOLUME:/work rp2350-native-tcc "$@"
+mkdir -p ../out
+# as the other wrappers do: out/ is the builder's while CMD runs (on a
+# Linux host the bind mount keeps the host's owner), and the host user's
+# again after
+exec docker run --rm -i --user 0 -e SYSROOT -e TARGET_CC -e XB -e NB -e BOARD_LIBC -e LAYOUT -e ROOT -v "$PWD/..:/native" -v "$PWD/tinycc:/tcc-src" \
+	-v $WORK_VOLUME:/work rp2350-native-tcc bash -c '
+		owner=$1; shift
+		chown builder /work; chown -R builder /native/out
+		trap "chown -R $owner /native/out" EXIT
+		cd /home/builder
+		runuser -u builder -- "$@"
+	' _ "$(id -u):$(id -g)" "$@"
