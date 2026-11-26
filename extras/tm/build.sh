@@ -1,28 +1,46 @@
 #!/bin/sh
-# Build tm. Compiles one file at a time so it fits on a small board.
-# Always rebuilds everything: on the board's FAT card every file has the
-# same timestamp, so "is it newer" checks can't be trusted.
-#   ./build.sh            with tcc (the board)
-#   CC=cc ./build.sh      with any other C compiler
-#   ./build.sh xterm      build xterm (a terminal in an X11 window) instead
-set -e
-cd "$(dirname "$0")"
-CC=${CC:-tcc}
+# Build tm, the terminal multiplexer.
+# Each source file is compiled on its own and then linked, which keeps
+# tcc's peak memory low enough for the board. Everything is rebuilt every
+# time: without a real-time clock the board's file times can't be trusted.
+#   ./build.sh [name ...]   build the named programs (default: all)
+#   CC=gcc ./build.sh       build with another compiler
+cd "$(dirname "$0")" || exit 1
+CC=${CC:-cc}
 CFLAGS=${CFLAGS:--O2}
-SRCS="main client server copy vt render sb lz keys proto util"
-NAME=tm
-# ./build.sh xterm: the terminal in an X11 window instead (needs ../demos/x11.h)
-if [ "$1" = xterm ]; then
-    SRCS="xterm vt sb lz util"
-    NAME=xterm
-    CFLAGS="$CFLAGS -I../demos"
-fi
-OBJS=
-for f in $SRCS; do
-    echo "  CC $f.c"
-    $CC $CFLAGS -D_GNU_SOURCE -c "$f.c" -o "$f.o"
-    OBJS="$OBJS $f.o"
+
+# build NAME SOURCES...
+build() {
+    name=$1; shift
+    tmp=${TMPDIR:-/tmp}/build-$name.$$
+    mkdir -p "$tmp" || return 1
+    objs=""
+    n=0
+    for src in "$@"; do
+        # numbered, so sources with the same name in two directories don't collide
+        n=$((n + 1))
+        obj="$tmp/$n.o"
+        echo "  CC $src"
+        $CC $CFLAGS -D_GNU_SOURCE -c "$src" -o "$obj" || { rm -rf "$tmp"; return 1; }
+        objs="$objs $obj"
+    done
+    # Link to a temporary name, then rename: safe while the old one runs.
+    $CC -o "$name.new" $objs && mv "$name.new" "$name"
+    rc=$?
+    rm -rf "$tmp"
+    [ $rc -eq 0 ] && echo "built $name"
+    return $rc
+}
+
+# not ${*:-...}: busybox hush expands that to nothing
+targets="$*"
+[ -n "$targets" ] || targets="tm"
+status=0
+for t in $targets; do
+    case $t in
+        tm) build tm main.c client.c server.c copy.c render.c keys.c proto.c \
+                ../lib/vt/vt.c ../lib/vt/sb.c ../lib/vt/lz.c ../lib/vt/vtutil.c || status=1 ;;
+        *) echo "unknown program: $t" >&2; status=1 ;;
+    esac
 done
-echo "  LD $NAME"
-# Link to a temporary name, then rename: safe while the old one runs.
-$CC -o "$NAME.new" $OBJS && mv "$NAME.new" "$NAME"
+exit $status

@@ -3,7 +3,8 @@
  * xmc.c - the mc file manager in an X11 window, in xpulse's style.
  *
  * Build:  ./build.sh xmc        (xmc.c with mc's panel.c, fileops.c,
- *                                usermenu.c and util.c; needs ../demos/x11.h)
+ *                                usermenu.c and util.c, and ../lib/vt;
+ *                                needs ../lib/x11.h)
  * Run:    DISPLAY=HOST:0 ./xmc [left-dir [right-dir]]
  *
  * mc's logic is shared: reading and sorting directories, marks, copy, move,
@@ -27,7 +28,7 @@
  * this one is; each goes its own way) and terminal tabs. A command typed
  * on the command line, a program opened with a double-click, a user menu
  * command, F4 (the editor) and C-n (a shell) each get a terminal tab of
- * their own (../tm/term.h), where the keys go to the program while it
+ * their own (../lib/vt/vtpane.h), where the keys go to the program while it
  * runs. A tab is shown when its program first writes something, soon
  * after it starts; one that ends well with nothing on its screen (an X
  * program, a command with nothing to say, vi when you quit) closes by
@@ -39,8 +40,8 @@
  * only when what it shows changed, lists scroll with one copy on the
  * server, and menus and dialogs put back what they covered with one copy.
  */
-#include "x11.h"
-#include "../tm/term.h"
+#include "../lib/x11.h"
+#include "../lib/vt/vtpane.h"
 #include <ctype.h>
 #include <fcntl.h>
 #include <signal.h>

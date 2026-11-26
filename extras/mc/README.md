@@ -5,7 +5,8 @@ coloured like GNU Midnight Commander's default skin (checked side by side
 against mc 4.8.33), but it is a separate program of about 6,200 lines of commented C
 with no dependencies: no curses, no glib, no subshell.
 
-    ./build.sh          # build on the board with tcc
+    ./build.sh          # build mc and xmc on the board with tcc
+    ./build.sh mc       # only mc
     ./mc [left [right]] # start, optionally in two directories
 
 ## What it does
@@ -152,7 +153,7 @@ ANSI colour 4. To change it, edit `SKIN_PALETTE` in `skin.h`, or set
 
 `./build.sh xmc` builds `xmc`, which shares mc's panels, file operations,
 dialogs and user menu but draws them in an X11 window (for XQuartz on a
-Mac, say), in the style of `../demos/xpulse`:
+Mac, say), in the style of `../pulse/xpulse`:
 
     DISPLAY=HOST:0 ./xmc [left-dir [right-dir]]
 
@@ -171,8 +172,8 @@ Mac, say), in the style of `../demos/xpulse`:
   them. A tab's close button, or the middle button, closes it.
 - **Commands run in terminal tabs.** A typed command, a program opened with
   a double-click, a user-menu command, F4 (the editor) and C-n (a shell)
-  each get a tab of their own: a terminal (`../tm/term.h`), where the keys
-  go to the program while it runs, so vi, top or mc work there. The tab
+  each get a tab of their own: a terminal (`../lib/vt/vtpane.h`), where the
+  keys go to the program while it runs, so vi, top or mc work there. The tab
   comes to the front when the program first writes something, soon after
   it starts, so an X program or a command with nothing to say leaves the
   panels where they are. A tab whose program ends well and leaves nothing
@@ -180,8 +181,8 @@ Mac, say), in the style of `../demos/xpulse`:
   the program has ended, a key closes it. Closing a tab whose program is
   still running hangs up on it.
 
-It needs `../demos/x11.h` and `../tm`'s terminal (`vt.c`, `sb.c`, `lz.c`,
-`util.c`, `term.h`), which `build.sh` compiles in.
+It needs `../lib/x11.h` and the terminal in `../lib/vt` (`vt.c`, `sb.c`,
+`lz.c`, `vtutil.c`, `vtpane.h`), which `build.sh` compiles in.
 
 ## Differences from GNU mc
 

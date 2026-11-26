@@ -15,12 +15,12 @@ atrans/test-qemu.sh            # smoke tests under qemu-arm (in Docker)
 ```
 
 Stages: `toolchain` (Buildroot: gcc, musl, the packages; under an hour
-the first time), `extras` (extras/ programs, the tests, and claude-guest-mcp
-with the host's Rust), `root` (the tree and its tarballs), `shell` (a shell
-in the container with the toolchain on `PATH`) and `make ARGS` (make in the
-Buildroot output, e.g. `make tmux-rebuild`). `busybox-atrans` is built from
-the busybox source the native rootfs build downloads, so `./run-build.sh
-rootfs` comes first.
+the first time), `extras` (the ATRANS tests, busybox, and claude-guest-mcp
+with the host's Rust; the extras/ programs are built on the board), `root`
+(the tree and its tarballs), `shell` (a shell in the container with the
+toolchain on `PATH`) and `make ARGS` (make in the Buildroot output, e.g.
+`make tmux-rebuild`). `busybox-atrans` is built from the busybox source
+the native rootfs build downloads, so `./run-build.sh rootfs` comes first.
 
 Everything runs in the build's Docker image (`rp2350-native-build`,
 `docker/Dockerfile`) with the Buildroot checkout in `src/`. The trees are in
@@ -181,7 +181,6 @@ holds the whole image.
 | bc / dc | 73 / 54 KB | 67 / 48 KiB | 5 / 5 KiB | |
 | rz / sz | 96 / 90 KB | 90 / 83 KiB | 6 / 7 KiB | |
 | clear, tput, tset | 103–111 KB | 96–104 KiB | 4–6 KiB | ncurses' terminfo reader |
-| demos | 20–53 KB | 16–48 KiB | 2–5 KiB | |
 | claude-guest-mcp | 39 KB | 34 KiB | 1 KiB | plus its 128 KiB arena (mmap) and the shells it runs |
 | hello | 9 KB | 4 KiB | 2 KiB | |
 

@@ -65,14 +65,21 @@ Programs see `TERM=screen-256color` and `$TM` (the socket path).
 | main.c           | command line, starting the server                       |
 | client.c         | the attached terminal: raw mode, keys in, output out    |
 | server.c         | windows, keys, mouse, status line, drawing              |
-| vt.c             | the terminal emulator (one per window)                  |
 | render.c         | sends only the cells that changed to the real terminal  |
 | copy.c           | copy mode                                               |
-| sb.c             | scrollback storage (ring file or RAM)                   |
-| lz.c             | LZ4-format block compressor                             |
 | keys.c           | key and mouse report decoding                           |
 | proto.c          | client/server message framing                           |
-| util.c           | buffers, UTF-8, allocation                              |
+
+The terminal emulator is in `../lib/vt`, shared with
+[`xterm`](../xterm/README.md) and `xmc`:
+
+| file             | what                                                    |
+|------------------|---------------------------------------------------------|
+| vt.c             | the terminal emulator (one per window)                  |
+| sb.c             | scrollback storage (ring file or RAM)                   |
+| lz.c             | LZ4-format block compressor                             |
+| vtutil.c         | buffers, UTF-8, allocation                              |
+| vtpane.h         | a terminal in part of an X11 window (xterm, xmc)        |
 
 Each session is one background server on the socket `/tmp/tm-UID/NAME`.
 The client and server exchange frames on it: a type byte, a 2-byte
@@ -86,22 +93,5 @@ replacing any attached client, and `X` kills the session.
 
 ## Building
 
-    ./build.sh             # tcc, one file at a time (fits the board)
-    CC=cc ./build.sh       # any other compiler
-
-## xterm
-
-`./build.sh xterm` builds a terminal in an X11 window from the same
-emulator (`vt.c`), for an X server such as XQuartz on a Mac:
-
-    DISPLAY=HOST:0 ./xterm [-fs PIXELS] [-g COLSxROWS] [-T TITLE] [-hold]
-                           [-e COMMAND [ARGS...]]
-
-It runs your shell, or the command after `-e`, with
-`TERM=screen-256color`: vi, less, top and mc work in it. The wheel and
-Shift-PgUp/PgDn scroll back through history, unless the program asked
-for the mouse. The window can be resized, and only the cells that changed
-are sent to the X server.
-
-The terminal itself is `term.h`, a header for any X11 program that uses
-`../demos/x11.h`; `xmc` (in `../mc`) uses it for its terminal tabs.
+    ./build.sh             # cc (tcc on the board), one file at a time
+    CC=gcc ./build.sh      # any other compiler

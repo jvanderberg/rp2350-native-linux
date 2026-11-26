@@ -10,8 +10,8 @@
 #ifndef RENDER_H
 #define RENDER_H
 
-#include "cell.h"
-#include "util.h"
+#include "../lib/vt/cell.h"
+#include "../lib/vt/vtutil.h"
 
 /* What the outer terminal currently shows, and its modes. */
 struct term {

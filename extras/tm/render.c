@@ -5,7 +5,7 @@
 #include <string.h>
 
 #include "render.h"
-#include "vt.h"
+#include "../lib/vt/vt.h"
 
 void term_reset(struct term *t, int rows, int cols)
 {
@@ -14,7 +14,7 @@ void term_reset(struct term *t, int rows, int cols)
     free(t->front);
     t->rows = rows;
     t->cols = cols;
-    t->front = xmalloc(sizeof *t->front * n);
+    t->front = vt_xmalloc(sizeof *t->front * n);
     for (i = 0; i < n; i++) {
         t->front[i].ch = 0;             /* matches nothing real */
         t->front[i].attr = 0xFFFFFFFFu;

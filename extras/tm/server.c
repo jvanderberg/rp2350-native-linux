@@ -27,7 +27,7 @@
 #include "proto.h"
 #include "render.h"
 #include "server.h"
-#include "util.h"
+#include "../lib/vt/vtutil.h"
 #include "window.h"
 
 #define PREFIX      K_CTRL('b')
@@ -245,7 +245,7 @@ static struct window *new_window(void)
             break;
         id++;
     }
-    w = xcalloc(1, sizeof *w);
+    w = vt_xcalloc(1, sizeof *w);
     w->id = id;
     vt_init(&w->vt, area_rows(), area_cols(), S.cfg->history_dir,
             S.cfg->history_disk, S.cfg->history_ram);
@@ -439,8 +439,8 @@ static void set_size(int rows, int cols)
     S.term.app_cursor = S.term.app_keypad = -1;     /* unknown: resend */
     S.term.mouse = -1;
     S.term.paste = -1;
-    S.scr = xrealloc(S.scr, sizeof *S.scr * (size_t)rows * (size_t)cols);
-    S.mask = xrealloc(S.mask, (size_t)rows);
+    S.scr = vt_xrealloc(S.scr, sizeof *S.scr * (size_t)rows * (size_t)cols);
+    S.mask = vt_xrealloc(S.mask, (size_t)rows);
     S.full = 1;
     if (S.fresh) {
         /* alternate screen, no auto-wrap (the bottom-right cell must not
@@ -457,7 +457,7 @@ static void paste(void)
 
     if (S.paste == NULL || S.cur == NULL)
         return;
-    s = xmalloc(S.paste_len);
+    s = vt_xmalloc(S.paste_len);
     for (i = 0; i < S.paste_len; i++)   /* lines end with CR, as typed */
         s[i] = S.paste[i] == '\n' ? '\r' : S.paste[i];
     if (S.cur->vt.bracketed_paste)

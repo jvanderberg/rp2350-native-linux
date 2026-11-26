@@ -30,7 +30,7 @@
  */
 #include "wl_def.h"
 #define X11_TIMING
-#include "x11.h"
+#include "../lib/x11.h"
 #include <time.h>
 
 #define XW_W 320                        /* the engine's screen */

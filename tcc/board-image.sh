@@ -3,10 +3,12 @@
 # native-build.sh: a romfs image, out/tcc-romfs.img, for testing a tcc
 # build on the board without rebuilding the root file system.
 # It holds the tcc tree (ROOT, default /native/out/tcc-root), the repo's
-# tcc tests (test/), extras/demos (demos/) and setup.sh, which mounts the
-# romfs and links the tree into place (/usr/bin/tcc, cc, /usr/lib/tcc,
-# /usr/include, /usr/lib/*). board-load.sh writes it to flash at
-# 0x10a00000; the kernel needs an "mtd-rom" node there whose MTD device
+# tcc tests (test/), the sources and build scripts of extras/games, maze,
+# samples and pulse with lib's headers (laid out as in the repo so their
+# ../lib includes work) and setup.sh, which
+# mounts the romfs and links the tree into place (/usr/bin/tcc, cc,
+# /usr/lib/tcc, /usr/include, /usr/lib/*). board-load.sh writes it to
+# flash at 0x10a00000; the kernel needs an "mtd-rom" node there whose MTD device
 # is named "tcc" (linux,mtd-name).
 set -eu
 ROOT=${1:-/native/out/tcc-root}
@@ -15,10 +17,20 @@ MAX=$((0x5f0000))
 W=/work/tcc-romfs
 rm -rf $W; mkdir -p $W
 cp -a "$ROOT/." $W/
-mkdir $W/test $W/demos
+mkdir $W/test $W/extras
 cp /native/tcc/test/*.c /native/tcc/test/*.h \
 	/native/tcc/test/*.expect /native/tcc/test/run.sh $W/test/
-cp /native/extras/demos/*.c /native/extras/demos/*.h /native/extras/demos/build.sh $W/demos/
+# sources only: /native is the live repo, where a host build may have left
+# binaries
+mkdir $W/extras/lib
+cp /native/extras/lib/*.h $W/extras/lib/
+for d in games maze samples pulse; do
+	mkdir $W/extras/$d
+	cp /native/extras/$d/*.c /native/extras/$d/build.sh $W/extras/$d/
+	for h in /native/extras/$d/*.h; do
+		if [ -e "$h" ]; then cp "$h" $W/extras/$d/; fi
+	done
+done
 # the same tests built on the host, to tell the board's compiler from the
 # board's run time: by the cross tcc (test/x-tcc) and by the userland's
 # gcc (test/x-gcc), if they are there
@@ -46,12 +58,13 @@ ln -sf tcc /usr/bin/cc
 for f in $M/usr/lib/*; do
 	[ -e "/usr/lib/${f##*/}" ] || ln -s "$f" /usr/lib/
 done
-rm -rf /tmp/test /tmp/demos
-cp -r $M/test $M/demos /tmp/
-echo "tcc ready: /tmp/test (sh board-run.sh), /tmp/demos (./build.sh)"
+rm -rf /tmp/test /tmp/extras
+cp -r $M/test $M/extras /tmp/
+echo "tcc ready: /tmp/test (sh board-run.sh), /tmp/extras (games/build.sh ...)"
 EOF
 cp /native/tcc/board-run.sh /native/tcc/board-wv.c $W/test/
-chmod 755 $W/setup.sh $W/test/run.sh $W/test/board-run.sh $W/demos/build.sh
+chmod 755 $W/setup.sh $W/test/run.sh $W/test/board-run.sh \
+	$W/extras/games/build.sh $W/extras/samples/build.sh $W/extras/pulse/build.sh
 genromfs -f $IMG -d $W -V tcc
 n=$(stat -c %s $IMG)
 ls -l $IMG
