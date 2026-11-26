@@ -1,8 +1,8 @@
 # extras
 
-Programs for the board: games and demos, a telnet BBS, two file managers,
-a Midnight Commander lookalike, a terminal multiplexer, Wolfenstein 3D and
-a WS2812 LED driver.
+Programs for the board: terminal games and demos, X11 programs, a telnet
+BBS, a Midnight Commander lookalike, a terminal multiplexer, a terminal in
+an X11 window, Wolfenstein 3D and a WS2812 LED driver.
 
 They aren't in the image. Copy the sources to the board and build them
 there with `cc` (tcc), using the commands below. On the host,
@@ -10,14 +10,18 @@ there with `cc` (tcc), using the commands below. On the host,
 
 | Directory | What it is | Build on the board and run |
 |---|---|---|
-| [`demos/`](demos/) | Terminal games and demos | `./build.sh`, then `./asteroids` |
-| [`wolf3d/`](wolf3d/README.md) | Wolfenstein 3D in an X11 window | see its README |
-| [`bbs/`](bbs/) | A telnet BBS with a MUD | `./bbsctl start` |
+| [`games/`](games/) | `asteroids`, `stackfall` (falling blocks), `life`, `rain` (digital rain) | `./build.sh`, then `./asteroids` |
+| [`maze/`](maze/) | A first-person 3D maze, in the terminal and in an X11 window | `./build.sh && ./maze` |
+| [`pulse/`](pulse/) | CPU, memory, network and processes, in the terminal and in an X11 window | `./build.sh && ./pulse` |
+| [`samples/`](samples/) | Small samples: `bogomips`, `mandel`, `xeyes` | `./build.sh && ./mandel` |
+| [`httpd/`](httpd/README.md) | A small static file server | `./build.sh && ./httpd` |
+| [`tm/`](tm/README.md) | A small tmux work-alike | `./build.sh && ./tm` |
+| [`xterm/`](xterm/README.md) | A terminal in an X11 window | `./build.sh`, see its README |
 | [`mc/`](mc/README.md) | A Midnight Commander lookalike, and `xmc`, the same in an X11 window | `./build.sh && ./mc` |
-| [`tm/`](tm/README.md) | A small tmux work-alike, and `xterm`, a terminal in an X11 window | `./build.sh && ./tm` |
-| [`nnn/`](nnn/) | The nnn file manager | `./build.sh && ./nnn` |
-| [`noice/`](noice/) | The noice file browser | see below |
-| [`ws2812/`](ws2812/) | WS2812 LEDs driven by PIO | see below |
+| [`bbs/`](bbs/) | A telnet BBS with a MUD | `./bbsctl start` |
+| [`wolf3d/`](wolf3d/README.md) | Wolfenstein 3D in an X11 window | see its README |
+| [`ws2812/`](ws2812/) | WS2812 LEDs driven by PIO | `./build.sh`, see below |
+| [`lib/`](lib/) | Code the others share (below) | |
 
 In the examples, lines starting with `#` are in the board's shell, and
 lines starting with `$` on the host.
@@ -31,21 +35,29 @@ use the SD card. With the card mounted at `/mnt/sd`:
 $ tar cf - -C extras . | ssh root@ADDRESS 'mkdir -p /mnt/sd/extras && tar xf - -C /mnt/sd/extras'
 ```
 
-`nnn` uses the curses headers in `noice/include`, so copy `noice/` with it.
+Keep the layout: most programs include headers from `lib/` by a relative
+path (`#include "../lib/x11.h"`), so `lib/` has to be next to them.
 
-## demos
+## Building
 
-`asteroids`, `stackfall` (falling blocks), `life`, `rain` (digital rain),
-`pulse` (CPU, memory, network and processes), `bogomips`, `maze` (a
-first-person 3D maze; `./maze -demo` explores it by itself), `mandel` and a
-small `httpd`. `./build.sh` builds the first seven and the three X11 programs
-below, or only the ones named (`./build.sh life rain`). Build the others with
-`cc`:
+Each directory's `build.sh` builds all its programs, or only the ones
+named (`games/build.sh life rain`). It compiles one file at a time, which
+keeps tcc's memory low enough for the board, and links to `NAME.new`
+before renaming it, so a program can be rebuilt while it runs.
+`CC=gcc ./build.sh` builds with another compiler.
+
+A program in one file can also be built by hand, with no `-I`:
 
 ```
 # cc -o mandel mandel.c
-# cc -o httpd httpd.c
 ```
+
+## games, maze, pulse and samples
+
+`asteroids`, `stackfall`, `life` and `rain` run in the terminal, through
+`lib/ansi.h`. `maze` is a first-person 3D maze; `./maze -demo` explores
+it by itself. `pulse` shows CPU, memory, network and processes. `bogomips`
+and `mandel` just print.
 
 `xeyes`, `xmaze` and `xpulse` open a window on an X server instead of using
 the terminal, such as XQuartz on a Mac. `xmaze` is the maze drawn as X shapes
@@ -53,13 +65,13 @@ rather than pixels, about 1 KB a frame, so it stays fast over the board's
 network link and sharp at any window size; it takes `-demo` too. `xpulse` is
 `pulse` in a window, with graphs, a process table sorted by clicking a
 column, and a right-click menu to signal a process; an update sends only
-what changed, 1-4 KB. All three use `x11.h`, which speaks the X11 protocol
-itself, so no Xlib is needed; it is the window counterpart of `term.h`. The
-simplest way to run one is through SSH's X11 forwarding, from the machine
-with the screen:
+what changed, 1-4 KB. All three use `lib/x11.h`, which speaks the X11
+protocol itself, so no Xlib is needed; it is the window counterpart of
+`lib/ansi.h`. The simplest way to run one is through SSH's X11 forwarding,
+from the machine with the screen:
 
 ```
-$ ssh -Y root@BOARD-ADDRESS /mnt/sd/extras/demos/xmaze -demo
+$ ssh -Y root@BOARD-ADDRESS /mnt/sd/extras/maze/xmaze -demo
 ```
 
 Or, without SSH: on the machine with the screen, allow network clients
@@ -70,6 +82,14 @@ board:
 # DISPLAY=SCREEN-ADDRESS:0 ./xmaze -demo
 ```
 
+## lib
+
+| File | What it is | Used by |
+|---|---|---|
+| `ansi.h` | Raw keys, the alternate screen and a frame buffer for ANSI terminals | games, maze, pulse |
+| `x11.h` | A small X11 client that speaks the protocol over a socket, with no Xlib | the X11 programs |
+| `vt/` | The terminal emulator: `vt.c`, scrollback (`sb.c`, `lz.c`), `vtutil.c`, and `vtpane.h`, a terminal in part of an X11 window | tm, xterm, xmc |
+
 ## bbs
 
 A telnet BBS with message boards, chat, XMODEM and YMODEM transfers, and a
@@ -78,30 +98,22 @@ starts `inetd` on `telnet_port` from `bbs.conf`; `./bbsctl stop` ends it.
 Port 23 is the board's own telnet, so stop that or pick another port. Run
 `./bbsctl start` again after each reboot.
 
-## noice
-
-```
-# cc -Iinclude -o noice noice.c strlcat.c strlcpy.c -lncurses && ./noice
-```
-
 ## ws2812
 
-The same program as `ws2812` in `/usr/share/examples/pio`:
+The same program as `ws2812` in `/usr/share/examples/pio`. `build.sh` runs
+`pioasm ws2812.pio ws2812.pio.h`, then `cc -o ws2812 ws2812.c -lpio`:
 
 ```
-# pioasm ws2812.pio ws2812.pio.h && cc -o ws2812 ws2812.c -lpio
+# ./build.sh
 # ./ws2812 PIN COUNT RRGGBB
 ```
 
 ## Licenses
 
-`demos/`, `bbs/`, `mc/` and `tm/` are under the repository's MIT license.
+Everything here is under the repository's MIT license, except:
 
 - `wolf3d/` is a port of Wolf4SDL, under the GNU GPL version 2 (see its
   `PROVENANCE` and `LICENSE-GPL-2.0`); its own additions, `xwolf.c`,
   `SDL.h` and the scripts, are MIT. The game data is not included.
-- `nnn/` and `noice/` are ports of upstream nnn and noice (BSD-2-Clause,
-  see their `LICENSE` files), with small shims so they build with tcc.
-  `noice/include` holds ncurses headers (MIT-X11).
 - `ws2812/ws2812.pio` comes from the pico-examples (Copyright (c) 2020
   Raspberry Pi (Trading) Ltd., BSD-3-Clause).

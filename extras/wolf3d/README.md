@@ -3,7 +3,7 @@
 Wolfenstein 3D on the board, in a window on an X server such as XQuartz on a
 Mac. It is [Wolf4SDL](PROVENANCE), the SDL port of id Software's released
 source, with SDL replaced by `xwolf.c`, which talks to the X server through
-[`../demos/x11.h`](../demos/x11.h). No Xlib, no SDL and no sound.
+[`../lib/x11.h`](../lib/x11.h). No Xlib, no SDL and no sound.
 
 With the shareware episode at 640x400 it runs at about 45 frames a second,
 sending about 8 KB a frame, and uses about 1.3 MB of the board's memory.
@@ -24,7 +24,7 @@ This downloads the shareware, version 1.4, checks its MD5 and puts the eight
 ## Building and running
 
 Put `extras/` on the board as in the [extras README](../README.md) (the build
-needs `../demos/x11.h`), then the data next to the program:
+needs `../lib/x11.h`), then the data next to the program:
 
 ```
 $ scp data/*.wl1 root@BOARD:/mnt/sd/extras/wolf3d/

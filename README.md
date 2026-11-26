@@ -37,8 +37,8 @@ and brought back elsewhere in memory.
 - **tmux and friends**: tmux, htop, nano, mg, less, Lua and ncdu from
   Buildroot. More programs are in [extras/](extras/README.md), built on
   the board with tcc: `mc` (a Midnight Commander lookalike), `tm` (a small
-  tmux work-alike), nnn, noice, games and demos, X11 programs and a telnet
-  BBS.
+  tmux work-alike), `xterm`, games and demos, X11 programs, a small web
+  server and a telnet BBS.
 
 ## Hardware
 
@@ -264,7 +264,7 @@ On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
 | `atrans/` | The ATRANS toolchain (Buildroot, musl, patched gcc and binutils), its packages and the tree they make ([atrans/README.md](atrans/README.md)) |
 | `tcc/` | TinyCC for ARMv7-M Thumb-2 ATRANS programs: patches, build and test scripts |
 | `pins/`, `br-external/` | The pin tools' userland: libpio, MicroPython's `machine`, examples ([pins/README.md](pins/README.md)) |
-| `extras/` | Programs for the board: `mc`, `tm`, `nnn`, `noice`, a BBS, demos, `ws2812` ([extras/README.md](extras/README.md)) |
+| `extras/` | Programs for the board: `mc`, `tm`, `xterm`, games and demos, `httpd`, a BBS, Wolfenstein 3D, `ws2812` ([extras/README.md](extras/README.md)) |
 | `claude-remote/` | `claude-remote` and `claude-guest-mcp`, an MCP tool server built as an ATRANS program |
 | `tests/` | Kernel tests (`forktest`, `forktest3`, `swaptest`), the FDPIC switch baseline `pingpong`, `sramload`, `watchd`, and the ATRANS linker scripts |
 | `docker/` | The image the Buildroot builds run in (`rp2350-native-build`) |
@@ -312,7 +312,7 @@ The project's own code is MIT ([LICENSE](LICENSE)), with these exceptions:
     ([its NOTICE](tools/pintester/debugprobe-v2.3.1-backup.NOTICE.txt)).
   - `br-external/package/libpio` and `micropython-machine`: pico-sdk,
     pico-examples and MicroPython parts (their `LICENSE*` files).
-  - `extras/`: nnn, noice, ncurses headers and the pico-examples'
+  - `extras/`: Wolf4SDL (GPL-2.0) in `wolf3d/`, and the pico-examples'
     `ws2812.pio` ([extras/README.md](extras/README.md), "Licenses").
   - `tcc/patches`: changes to TinyCC (LGPL-2.1-or-later), which is
     downloaded at build time.

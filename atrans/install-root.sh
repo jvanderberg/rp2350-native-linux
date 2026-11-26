@@ -47,7 +47,7 @@ cat > "$ROOT/etc/default/dropbear" <<'D'
 mkdir -p -m 700 /home/dropbear
 D
 
-# extras/ programs, the BBS, the tests
+# the ATRANS tests and busybox (build-extras.sh)
 cp -a "$EX/usr" "$ROOT/"
 # claude-remote: the script and claude-guest-mcp (Rust, built on the host)
 install -m 755 /native/claude-remote/claude-remote "$ROOT/usr/bin/claude-remote"

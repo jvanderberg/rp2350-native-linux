@@ -8,7 +8,7 @@
 
 #include "copy.h"
 #include "keys.h"
-#include "util.h"
+#include "../lib/vt/vtutil.h"
 
 #define A_MODE MKATTR(0, 3, 0)      /* black on yellow, tmux's mode-style */
 
@@ -131,7 +131,7 @@ static void yank_selection(struct window *w, char **yank, size_t *len)
     struct copy *c = &w->cm;
     long y0 = c->sy, y1 = c->cy, y;
     int x0 = c->sx, x1 = c->cx, cols = w->vt.cols;
-    struct cell *line = xmalloc(sizeof *line * (size_t)cols);
+    struct cell *line = vt_xmalloc(sizeof *line * (size_t)cols);
     struct buf b = { NULL, 0, 0 };
 
     if (y0 > y1 || (y0 == y1 && x0 > x1)) {     /* put them in order */
@@ -175,7 +175,7 @@ int copy_key(struct window *w, int key, int rows, char **yank,
     case 'G': case K_END:           c->cy = total(w) - 1; break;
     case '0':                       c->cx = 0; break;
     case '$':
-        line = xmalloc(sizeof *line * (size_t)cols);
+        line = vt_xmalloc(sizeof *line * (size_t)cols);
         get_line(w, c->cy, line, cols);
         c->cx = line_end(line, cols);
         if (c->cx < 0)
@@ -247,7 +247,7 @@ int copy_search(struct window *w, const char *text, int up, int rows)
         return 0;
     snprintf(c->search, sizeof c->search, "%s", text);
     c->search_back = up;
-    line = xmalloc(sizeof *line * (size_t)cols);
+    line = vt_xmalloc(sizeof *line * (size_t)cols);
     for (y = c->cy + (up ? -1 : 1); y >= 0 && y < n; y += up ? -1 : 1) {
         int x;
 

@@ -7,7 +7,7 @@
 
 #include <sys/types.h>
 
-#include "vt.h"
+#include "../lib/vt/vt.h"
 
 /* Copy mode views the window's history plus its current screen as one
  * list of lines: 0 is the oldest history line, and the screen's rows

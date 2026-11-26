@@ -43,6 +43,6 @@ Changed (each says how at the top):
 - version.h: set up for the shareware data, version 1.4.
 
 Added (MIT): xwolf.c and SDL.h (the SDL calls the engine makes, on X11
-through ../demos/x11.h), build.sh, fetch-shareware.sh.
+through ../lib/x11.h), build.sh, fetch-shareware.sh.
 
 Game data is not included: fetch-shareware.sh downloads the shareware.
