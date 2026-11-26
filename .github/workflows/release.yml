@@ -1,0 +1,86 @@
+# The whole build, from nothing (build-all.sh: both Buildroot toolchains,
+# tcc, the pins userland, the root file system, the kernel, the boot stub),
+# then the release files (tools/release.sh): the UF2 and the extras zip.
+# A v* tag publishes them as a GitHub release; a manual run keeps them as
+# the run's artifacts.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe, for the version
+
+      - name: Disk space
+        run: df -h / # the work volume reaches about 12 GB; the runner has over 100 free
+
+      - name: Rust (rust-toolchain.toml)
+        run: |
+          if ! command -v rustup; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain none
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+            export PATH=$HOME/.cargo/bin:$PATH
+          fi
+          rustup toolchain install # the channel and targets in rust-toolchain.toml
+          rustup show
+
+      - name: Version
+        id: v
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then v=${GITHUB_REF_NAME}; else v=$(git describe --tags --always); fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "version $v"
+
+      - name: build-all.sh
+        run: |
+          start=$(date +%s)
+          ./build-all.sh
+          echo "build-all.sh: $(( ($(date +%s) - start) / 60 )) min" | tee -a "$GITHUB_STEP_SUMMARY"
+          df -h /
+
+      - name: Release files
+        run: tools/release.sh "${{ steps.v.outputs.version }}"
+
+      - name: Build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: out/*.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rp2350-native-linux-${{ steps.v.outputs.version }}
+          path: out/release/
+          compression-level: 0 # the UF2 and the zip are what they are
+
+      - name: GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=${{ steps.v.outputs.version }}
+          cat > notes.md <<EOF
+          Built by the [release workflow](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) from ${GITHUB_SHA}.
+
+          - **rp2350-native-linux-$v.uf2**: the boot stub, kernel, device tree and root file system. Hold BOOTSEL while plugging the board in and copy this onto the RP2350 drive. It leaves /home and the board config (the setup screen's settings) as they are.
+          - **rp2350-extras-$v.zip**: \`extras/\` with its programs built by the userland's gcc at -O2 (bbs is built by \`bbsctl\` on the board).
+          - **SHA256SUMS**
+          EOF
+          gh release create "$v" out/release/* --title "$v" --notes-file notes.md --verify-tag
