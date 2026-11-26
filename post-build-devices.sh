@@ -69,6 +69,24 @@ if [ -x "$T/usr/bin/busybox-atrans" ]; then
   echo "post-build-devices: $n applet links to busybox-atrans"
 fi
 
+# reboot [config] [OPTION]...: BusyBox's reboot; "config" first asks the boot
+# stub for its setup screen on the next boot (/proc/rp2350/next_boot,
+# linux/mach-rp2350/board.c). Replaces the applet link.
+reboot_bb=/bin/busybox
+[ -x "$T/usr/bin/busybox-atrans" ] && reboot_bb=/usr/bin/busybox-atrans
+rm -f "$T/sbin/reboot"
+cat > "$T/sbin/reboot" <<S
+#!/bin/sh
+# reboot [config] [OPTION]...: BusyBox's reboot. "config" first asks the
+# boot stub to open its setup screen on the next boot.
+if [ "\${1-}" = config ]; then
+	echo config > /proc/rp2350/next_boot || exit 1
+	shift
+fi
+exec $reboot_bb reboot "\$@"
+S
+chmod 755 "$T/sbin/reboot"
+
 # ---- PID 1: the overlay on the squashfs root -------------------------------------
 cat > "$T/sbin/overlay-init" <<'S'
 #!/bin/busybox sh
@@ -178,6 +196,9 @@ if [ $ok = 1 ]; then
 else
   echo "overlay-init: /home is in RAM"
 fi
+# the boot got this far: the boot stub's count of boots that didn't back
+# to 0, and its watchdog off (linux/mach-rp2350/board.c, boot/src/boot.rs)
+echo ok > /proc/rp2350/boot_ok 2>/dev/null
 mark "exec init"
 umount /proc
 mount --move /dev dev
@@ -187,8 +208,8 @@ S
 chmod 755 "$T/sbin/overlay-init"
 
 # ---- network ------------------------------------------------------------------------
-# eth0 is the Wi-Fi radio on core 1 (it joins the network in the Wi-Fi
-# settings sector itself, and joins again when the link stays down). DHCP
+# eth0 is the Wi-Fi radio on core 1 (it joins the network in the board
+# config itself, and joins again when the link stays down). DHCP
 # starts in the background at once, so boot doesn't wait for a lease.
 # Without an MMU, udhcpc -b (which daemonizes by re-executing itself) dies:
 # it runs with -f, put in the background by the shell instead.

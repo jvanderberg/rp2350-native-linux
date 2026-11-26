@@ -1,9 +1,10 @@
-//! RP2350B board support: clocks, PSRAM, TIMER0, BOOTSEL.
+//! RP2350 board support: clocks, PSRAM, TIMER0, BOOTSEL.
 //!
-//! - Clocks: 348 MHz at 1.20 V: voltage first, then flash timing that is
-//!   safe at both 150 MHz and 348 MHz, then the PLL (the order PicoMite
-//!   uses), then the flash at 116 MHz.
-//! - PSRAM on QMI CS1 = GP0 (AP Memory APS6404L). The sequence follows
+//! - Clocks: one of `CPU_PRESETS` (the board config picks it): voltage
+//!   first, then flash timing that is safe at every preset, then the PLL
+//!   (the order PicoMite uses), then the flash at the preset's speed.
+//! - PSRAM on QMI CS1, on whichever of GP0, GP8, GP19 or GP47 the board
+//!   config says, or the first that answers (AP Memory APS6404L). The sequence follows
 //!   PicoMite/FanPico psram.c (Timo Kokkonen): exit QPI, read ID, reset,
 //!   enter QPI, program M1 timing/format.
 //! - TIMER0.DBGPAUSE, which otherwise stops the timer whenever a debugger
@@ -33,17 +34,48 @@ use rp235x_hal as hal;
 
 pub const XTAL_HZ: u32 = 12_000_000;
 
-/// 12 MHz x 87 = 1044 MHz VCO, / 3 / 1 = 348 MHz (exact 350 is not reachable).
-const PLL_SYS_OC: hal::pll::PLLConfig = hal::pll::PLLConfig {
-    vco_freq: fugit::HertzU32::MHz(1044),
-    refdiv: 1,
-    post_div1: 3,
-    post_div2: 1,
+/// A CPU speed: the core voltage and the system PLL (12 MHz crystal x
+/// `vco_mhz / 12`, then / `pd1` / `pd2`). clk_sys = clk_peri = `mhz`.
+#[derive(Clone, Copy)]
+pub struct CpuPreset {
+    pub mhz: u32,
+    /// POWMAN VREG VSEL: 0.55 V + 0.05 V per step (0b01011 = 1.10 V, the
+    /// chip's default; at most 0b01111 = 1.30 V without unlocking more)
+    pub vsel: u32,
+    pub mv: u32,
+    pub vco_mhz: u32,
+    pub pd1: u8,
+    pub pd2: u8,
+}
+
+/// The CPU speeds setup offers: the chip's stock 150 MHz first, up to the
+/// 348 MHz this board has run at since bring-up (exact 350 is not reachable
+/// from a 12 MHz crystal). Each one is tested on the board
+/// (docs/boot-and-io.md, "CPU speed").
+pub const CPU_PRESETS: [CpuPreset; 5] = [
+    CpuPreset { mhz: 150, vsel: 0b01011, mv: 1100, vco_mhz: 1500, pd1: 5, pd2: 2 },
+    CpuPreset { mhz: 200, vsel: 0b01011, mv: 1100, vco_mhz: 1200, pd1: 6, pd2: 1 },
+    CpuPreset { mhz: 250, vsel: 0b01100, mv: 1150, vco_mhz: 1500, pd1: 6, pd2: 1 },
+    CpuPreset { mhz: 300, vsel: 0b01100, mv: 1150, vco_mhz: 1500, pd1: 5, pd2: 1 },
+    CpuPreset { mhz: 348, vsel: 0b01101, mv: 1200, vco_mhz: 1044, pd1: 3, pd2: 1 },
+];
+const _: () = {
+    let mut i = 0;
+    while i < CPU_PRESETS.len() {
+        let p = CPU_PRESETS[i];
+        assert!(p.vco_mhz.is_multiple_of(12) && p.vco_mhz / p.pd1 as u32 / p.pd2 as u32 == p.mhz);
+        assert!(p.vco_mhz >= 750 && p.vco_mhz <= 1600 && p.pd1 >= p.pd2 && p.vsel <= 0b01111);
+        i += 1;
+    }
 };
-/// POWMAN VREG VSEL code 0b01101 = 1.20 V (SDK VREG_VOLTAGE_1_20).
-const VREG_VSEL: u32 = 0b01101;
-/// Forced PSRAM SCK divider; `None` picks the in-spec one (<= 109 MHz).
-const PSRAM_CLKDIV: Option<u32> = Some(3);
+
+/// The flash's and the PSRAM's SCK: clk_sys over the smallest divider that
+/// gives at most 116 MHz (the PSRAM is specified to 109 MHz; it and the
+/// flash have run at 116 MHz at 348 / 3 since bring-up).
+const QMI_SCK_MAX: u32 = 116_000_000;
+pub fn qmi_clkdiv(sys_hz: u32) -> u32 {
+    sys_hz.div_ceil(QMI_SCK_MAX)
+}
 
 // ---- registers (values from the Pico SDK rp2350 headers) -------------------
 
@@ -211,15 +243,21 @@ fn psram_qmi_setup(csr_clkdiv: u32, timing: u32) {
     barrier();
 }
 
-/// Flash (M0) timing valid at both 150 and 348 MHz: COOLDOWN=1, RXDELAY=2,
+/// Flash (M0) timing valid at every preset: COOLDOWN=1, RXDELAY=2,
 /// MIN_DESELECT=6, CLKDIV=4 (87 MHz at 348; PicoMite's value above 288 MHz).
 const M0_TIMING_SLOW: u32 = 0x4000_6204;
-/// Flash (M0) timing at 348 MHz: COOLDOWN=1, RXDELAY=4, MIN_DESELECT=6,
-/// CLKDIV=3: 116 MHz, the PSRAM's clock on the same bus. At 348 MHz,
-/// RXDELAY 2 to 7 all read the flash correctly and 1 does not; 4 is the
-/// PSRAM's value too. Kernel text misses are flash reads, so this takes
-/// about 17% off a pipe round trip (docs/performance.md, "Flash").
-const M0_TIMING_FAST: u32 = 0x4000_6403;
+/// Flash (M0) timing at `sys_hz`: COOLDOWN=1, MIN_DESELECT=6, CLKDIV from
+/// `qmi_clkdiv`, and RXDELAY (half system clocks) about 5.7 ns. At 348 MHz
+/// that is 0x4000_6403: CLKDIV=3, 116 MHz, the PSRAM's clock on the same
+/// bus; RXDELAY 2 to 7 all read the flash correctly there and 1 does not,
+/// and 4 is the PSRAM's value too. Kernel text misses are flash reads, so
+/// this takes about 17% off a pipe round trip at 348 MHz
+/// (docs/performance.md, "Flash").
+fn m0_timing_fast(sys_hz: u32) -> u32 {
+    let clkdiv = qmi_clkdiv(sys_hz);
+    let rxdelay = (sys_hz / 1_000_000 * 114).div_ceil(10_000).min(2 * clkdiv - 1);
+    1 << 30 | 6 << 12 | rxdelay << 8 | clkdiv
+}
 
 #[inline(never)]
 #[unsafe(link_section = ".data.ram_func")]
@@ -246,8 +284,10 @@ fn vreg_set_voltage(vsel: u32) {
 }
 // SPDX-SnippetEnd
 
-/// Bring up the clocks (see the module docs) and return the clock manager.
+/// Bring up the clocks at `cpu` (see the module docs) and return the clock
+/// manager.
 pub fn init_clocks(
+    cpu: &CpuPreset,
     xosc: hal::pac::XOSC,
     clocks: hal::pac::CLOCKS,
     pll_sys: hal::pac::PLL_SYS,
@@ -259,38 +299,35 @@ pub fn init_clocks(
     use hal::pll::{common_configs::PLL_USB_48MHZ, setup_pll_blocking};
     let xosc = hal::xosc::setup_xosc_blocking(xosc, XTAL_HZ.Hz()).unwrap();
     watchdog.enable_tick_generation((XTAL_HZ / 1_000_000) as u16);
-    vreg_set_voltage(VREG_VSEL);
+    vreg_set_voltage(cpu.vsel);
     flash_timing(M0_TIMING_SLOW);
     let mut clocks = hal::clocks::ClocksManager::new(clocks);
-    let pll_sys =
-        setup_pll_blocking(pll_sys, xosc.operating_frequency(), PLL_SYS_OC, &mut clocks, resets)
-            .unwrap();
+    let pll = hal::pll::PLLConfig {
+        vco_freq: cpu.vco_mhz.MHz(),
+        refdiv: 1,
+        post_div1: cpu.pd1,
+        post_div2: cpu.pd2,
+    };
+    let pll_sys = setup_pll_blocking(pll_sys, xosc.operating_frequency(), pll, &mut clocks, resets).unwrap();
     let pll_usb =
         setup_pll_blocking(pll_usb, xosc.operating_frequency(), PLL_USB_48MHZ, &mut clocks, resets)
             .unwrap();
     clocks.init_default(&xosc, &pll_sys, &pll_usb).unwrap();
-    flash_timing(M0_TIMING_FAST);
+    flash_timing(m0_timing_fast(cpu.mhz * 1_000_000));
     clocks
 }
-
-/// Human-readable clock configuration for banners.
-pub const CLOCK_NOTE: &str = " (overclock, vreg 1.20 V)";
 
 /// Keep TIMER0 running while a debugger halts a core (DBGPAUSE resets to 7).
 pub fn timer_ignore_debug_halt() {
     wr(TIMER0_DBGPAUSE, 0);
 }
 
-pub type Gpio0Default = hal::gpio::Pin<
-    hal::gpio::bank0::Gpio0,
-    <hal::gpio::bank0::Gpio0 as hal::gpio::DefaultTypeState>::Function,
-    <hal::gpio::bank0::Gpio0 as hal::gpio::DefaultTypeState>::PullType,
->;
-
 // What the bring-up found, whole; the stub reads only some of it.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct Psram {
+    /// The chip select's pin.
+    pub cs: u8,
     /// mfid, kgd, eid[6]
     pub id: [u8; 8],
     /// Detected size in bytes.
@@ -304,28 +341,42 @@ pub struct Psram {
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub enum PsramError {
-    /// No chip answered (known-good-die byte wrong); the raw ID is attached.
-    NotFound([u8; 8]),
+    /// No chip answered (known-good-die byte wrong) on any pin tried.
+    NotFound,
 }
 
-/// Bring up the PSRAM on QMI CS1 (GP0) and map it writable at
-/// 0x11000000 (cached) / `PSRAM_UNCACHED`.
-pub fn psram_init(cs: Gpio0Default, sys_hz: u32) -> Result<Psram, PsramError> {
-    let _cs = cs.into_function::<hal::gpio::FunctionXipCs1>();
-    let csr_clkdiv = sys_hz.div_ceil(PSRAM_MAX_CSR_CLK);
-    let id = psram_read_id(csr_clkdiv);
-    if id[1] != KGD_PASS {
-        return Err(PsramError::NotFound(id));
+/// The PSRAM's ID if one answers with its chip select on `cs` (one of
+/// `pins::CS1_PINS`); the pin is left as the chip select if so, and
+/// released if not.
+pub fn psram_probe(cs: u8, sys_hz: u32) -> Option<[u8; 8]> {
+    crate::pins::set_function(cs, crate::pins::FUNC_XIP_CS1);
+    let id = psram_read_id(sys_hz.div_ceil(PSRAM_MAX_CSR_CLK));
+    if id[1] == KGD_PASS {
+        Some(id)
+    } else {
+        crate::pins::release(cs);
+        None
     }
+}
+
+/// Bring up the PSRAM with its chip select on `cs`, or on the first of
+/// `candidates` that answers if `cs` is None, and map it writable at
+/// 0x11000000 (cached) / `PSRAM_UNCACHED`.
+pub fn psram_init(cs: Option<u8>, candidates: &[u8], sys_hz: u32) -> Result<Psram, PsramError> {
+    let tries = cs.as_ref().map(core::slice::from_ref).unwrap_or(candidates);
+    let Some((cs, id)) = tries.iter().find_map(|&p| psram_probe(p, sys_hz).map(|id| (p, id))) else {
+        return Err(PsramError::NotFound);
+    };
+    let csr_clkdiv = sys_hz.div_ceil(PSRAM_MAX_CSR_CLK);
     // AP Memory APS6404L: 109 MHz max, tCEM 8 us, tCPH 18 ns.
     let period_fs = 1_000_000_000_000_000u64 / u64::from(sys_hz);
-    let clkdiv = PSRAM_CLKDIV.unwrap_or(sys_hz.div_ceil(109_000_000));
+    let clkdiv = qmi_clkdiv(sys_hz);
     let max_select = ((8_000_000_000u64 >> 6) / period_fs) as u32;
     let min_deselect = 18_000_000u64.div_ceil(period_fs) as u32;
     let rxdelay = 1 + if sys_hz > 150_000_000 { clkdiv } else { 1 };
     let timing = 1 << 30 | 2 << 28 | 3 << 23 | max_select << 17 | min_deselect << 12 | rxdelay << 8 | clkdiv;
     psram_qmi_setup(csr_clkdiv, timing);
-    Ok(Psram { id, size: detect_size(), clkdiv, sck_hz: sys_hz / clkdiv, timing: rd(M1_TIMING) })
+    Ok(Psram { cs, id, size: detect_size(), clkdiv, sck_hz: sys_hz / clkdiv, timing: rd(M1_TIMING) })
 }
 
 /// Smallest power of two at which the PSRAM address space wraps.
@@ -361,8 +412,10 @@ pub fn reboot_to_bootsel() -> ! {
     )
 }
 
-/// Hold core 1 in reset (PSM FRCE_OFF.PROC1, which `Multicore::spawn`
-/// releases when it starts core 1) and free the SIO spinlocks. A reset of
+/// Reset core 1 (PSM FRCE_OFF.PROC1, on and off again), so it waits in the
+/// boot ROM for `Multicore::spawn`, and free the SIO spinlocks. It isn't
+/// left held off: with core 1 forced off the chip's SWD port doesn't answer
+/// at all, so a debugger can't attach during the countdown or setup. A reset of
 /// core 0 alone (a debugger's, or SYSRESETREQ) can leave core 1 running its
 /// I/O loop: using the spinlocks, the code in SRAM that `copy_core1_text`
 /// rewrites, and the clocks, pins and QMI this stub sets up again.
@@ -373,6 +426,8 @@ pub fn core1_hold() {
     while !psm.frce_off().read().proc1().bit_is_set() {}
     // SAFETY: core 1 is held in reset, so no spinlock is in use.
     unsafe { hal::sio::spinlock_reset() };
+    // out of reset again, into the boot ROM's wait for a launch
+    psm.frce_off().modify(|_, w| w.proc1().clear_bit());
 }
 
 /// Go to BOOTSEL if a debugger asked for it via `BOOTSEL_MAGIC`.

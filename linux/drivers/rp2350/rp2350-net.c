@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * RP2350 Wi-Fi as Ethernet: eth0 over the frame rings in the I/O area
- * (rp2350-io.h). Core 1 runs the CYW43439 radio (boot/src/wifi.rs), joins the network stored in the Wi-Fi settings sector and
+ * (rp2350-io.h). Core 1 runs the CYW43439 radio (boot/src/wifi.rs), joins the network in the board config (set in the boot stub's setup screen) and
  * passes whole Ethernet frames; this driver is a plain Ethernet device on
  * top. Core 1 rings the doorbell (RPIO_BELL_NET) when it received a frame,
  * when the link changed and when a full transmit ring got room; Linux rings

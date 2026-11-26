@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * The board's pins for Linux on core 0 (pins/README.md):
+ * The board's pins for Linux on core 0 (pins/README.md), as on the default
+ * board config. The boot stub rewrites them for the config it boots with
+ * (boot/src/fdt.rs): core 1's pins reserved and named, the clocks set to
+ * the CPU speed, and i2c0, i2c1, spi0 or the ADC disabled when core 1 has
+ * their pins (or SPI0, for the SD card); on an RP2350A, GP30-47 reserved
+ * and the ADC off. Default config:
  *   /dev/gpiochip0  GP0-GP47 (the board's own pins reserved)
  *   /dev/i2c-0      I2C0 on GP4 (SDA) / GP5 (SCL); /dev/i2c-1 I2C1 on GP6 / GP7
  *   /dev/spidev0.0  SPI0: GP16 RX, GP17 CS (a GPIO), GP18 SCK, GP19 TX
@@ -53,6 +58,7 @@
 		reg = <0x40090000 0x100>;
 		clock-frequency = <RP2350_SYS_HZ>;	/* clk_sys */
 		raspberrypi,pins = <4 5>;		/* SDA, SCL */
+		status = "okay";
 		#address-cells = <1>;
 		#size-cells = <0>;
 	};
@@ -62,6 +68,7 @@
 		reg = <0x40098000 0x100>;
 		clock-frequency = <RP2350_SYS_HZ>;
 		raspberrypi,pins = <6 7>;
+		status = "okay";
 		#address-cells = <1>;
 		#size-cells = <0>;
 	};
@@ -72,6 +79,7 @@
 		clock-frequency = <RP2350_SYS_HZ>;	/* clk_peri */
 		raspberrypi,pins = <16 18 19>;		/* RX, SCK, TX */
 		cs-gpios = <&gpio0 17 1>;		/* active low */
+		status = "okay";
 		#address-cells = <1>;
 		#size-cells = <0>;
 		spidev@0 {
@@ -92,6 +100,7 @@
 		compatible = "raspberrypi,rp2350-adc";
 		reg = <0x400a0000 0x24>;
 		#io-channel-cells = <1>;
+		status = "okay";
 	};
 
 	dma@50000300 {

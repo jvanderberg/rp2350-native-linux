@@ -36,11 +36,7 @@ use crate::io::{self, BELL_NET};
 
 use cyw43::SpiBusCyw43;
 use embassy_net_driver::{Driver, HardwareAddress, LinkState, RxToken, TxToken};
-use hal::gpio::bank0::{Gpio23, Gpio24, Gpio25, Gpio29};
-use hal::gpio::{
-    FunctionNull, FunctionPio0, FunctionSioOutput, OutputDriveStrength, OutputSlewRate, Pin as GpioPin, PullDown,
-    PullNone,
-};
+use crate::pins;
 use hal::pio::{PIOBuilder, PIOExt, PinDir, PinState, SM0, ShiftDirection, StateMachine, Stopped};
 use rp235x_hal as hal;
 use rtt_target::rprintln;
@@ -75,8 +71,8 @@ const PIO_RXF0: usize = PIO0 + 0x020;
 const PIO_IRQ: usize = PIO0 + 0x030;
 const PIO_INPUT_SYNC_BYPASS: usize = PIO0 + 0x038;
 const PIO_SM0_INSTR: usize = PIO0 + 0x0d8;
-/// SIO's input levels of GP0-GP31.
-const SIO_GPIO_IN: usize = 0xd000_0004;
+/// Which 32 GPIOs PIO0 sees: GP0-31 (0) or GP16-47 (16).
+const PIO_GPIOBASE: usize = PIO0 + 0x168;
 /// Atomic set / clear register aliases.
 const SET: usize = 0x2000;
 const CLR: usize = 0x3000;
@@ -84,8 +80,6 @@ const FSTAT_RXFULL0: u32 = 1 << 0;
 const FSTAT_RXEMPTY0: u32 = 1 << 8;
 const FSTAT_TXFULL0: u32 = 1 << 16;
 
-const PIN_DIO: u8 = 24;
-const PIN_CLK: u8 = 29;
 /// gSPI clock for the RM2: cyw43-pio's RM2_CLOCK_DIVIDER gives a 50 MHz PIO
 /// clock (25 MHz bus) at the stock 150 MHz; pick the divider that does the
 /// same at our clock.
@@ -109,11 +103,11 @@ fn wr(a: usize, v: u32) {
 // SPDX-SnippetCopyrightText: Copyright (c) Embassy project contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pub struct PioSpi {
-    cs: GpioPin<Gpio25, FunctionSioOutput, PullDown>,
+    cs: pins::Out,
     /// Owned so nothing else claims SM0; driven through its registers.
     _sm: StateMachine<(hal::pac::PIO0, SM0), Stopped>,
-    _dio: GpioPin<Gpio24, FunctionPio0, PullNone>,
-    _clk: GpioPin<Gpio29, FunctionPio0, PullDown>,
+    /// The data line's GPIO (the chip's interrupt too, read through SIO).
+    dio: u8,
     timeouts: u32,
     /// `XFER_TIMEOUT_MS` in microseconds.
     timeout_us: u64,
@@ -130,9 +124,9 @@ impl PioSpi {
         pio0: hal::pac::PIO0,
         resets: &mut hal::pac::RESETS,
         sys_hz: u32,
-        dio: GpioPin<Gpio24, FunctionNull, PullDown>,
-        clk: GpioPin<Gpio29, FunctionNull, PullDown>,
-        cs: GpioPin<Gpio25, FunctionNull, PullDown>,
+        dio: u8,
+        clk: u8,
+        cs: u8,
     ) -> Self {
         let div = sys_hz.div_ceil(PIO_HZ_MAX);
         // cyw43-pio picks its program by PIO clock; below 75 MHz it is this
@@ -163,30 +157,32 @@ impl PioSpi {
         let installed = pio.install(&program.program).unwrap();
         let wrap_target = installed.wrap_target();
 
-        let mut dio = dio.into_pull_type::<PullNone>().into_function::<FunctionPio0>();
-        dio.set_schmitt_enabled(true);
-        dio.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
-        dio.set_slew_rate(OutputSlewRate::Fast);
-        let mut clk = clk.into_function::<FunctionPio0>();
-        clk.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
-        clk.set_slew_rate(OutputSlewRate::Fast);
-        let mut cs = cs.into_push_pull_output_in_state(hal::gpio::PinState::High);
-        cs.set_drive_strength(OutputDriveStrength::TwelveMilliAmps);
+        // PIO0 sees 32 GPIOs from GPIOBASE; config.rs checked both pins fit
+        let base = if dio >= 32 || clk >= 32 { 16 } else { 0 };
+        wr(PIO_GPIOBASE, base);
+        let (rdio, rclk) = (dio - base as u8, clk - base as u8);
+        pins::set_function(dio, pins::FUNC_PIO0);
+        pins::set_pull(dio, false, false);
+        pins::set_pad(dio, 3, true, true);
+        pins::set_function(clk, pins::FUNC_PIO0);
+        pins::set_pad(clk, 3, true, true);
+        pins::output(cs, true);
+        pins::set_pad(cs, 3, false, true);
 
         let (mut sm, _rx, _tx) = PIOBuilder::from_installed_program(installed)
-            .side_set_pin_base(PIN_CLK)
-            .out_pins(PIN_DIO, 1)
-            .in_pin_base(PIN_DIO)
-            .set_pins(PIN_DIO, 1)
+            .side_set_pin_base(rclk)
+            .out_pins(rdio, 1)
+            .in_pin_base(rdio)
+            .set_pins(rdio, 1)
             .out_shift_direction(ShiftDirection::Left)
             .autopull(true)
             .in_shift_direction(ShiftDirection::Left)
             .autopush(true)
             .clock_divisor_fixed_point(div as u16, 0)
             .build(sm0);
-        wr(PIO_INPUT_SYNC_BYPASS + SET, 1 << PIN_DIO);
-        sm.set_pindirs([(PIN_CLK, PinDir::Output), (PIN_DIO, PinDir::Output)]);
-        sm.set_pins([(PIN_CLK, PinState::Low), (PIN_DIO, PinState::Low)]);
+        wr(PIO_INPUT_SYNC_BYPASS + SET, 1 << rdio);
+        sm.set_pindirs([(rclk, PinDir::Output), (rdio, PinDir::Output)]);
+        sm.set_pins([(rclk, PinState::Low), (rdio, PinState::Low)]);
         rprintln!("[wifi] gSPI: PIO clock {} MHz (divider {})", sys_hz / div / 1_000_000, div);
         let set_pindir_out =
             pio::InstructionOperands::SET { destination: pio::SetDestination::PINDIRS, data: 1 }.encode();
@@ -194,10 +190,9 @@ impl PioSpi {
             pio::InstructionOperands::JMP { address: wrap_target, condition: pio::JmpCondition::Always }.encode();
         let timeout_us = u64::from(XFER_TIMEOUT_MS) * 1000;
         PioSpi {
-            cs,
+            cs: pins::Out(cs),
             _sm: sm,
-            _dio: dio,
-            _clk: clk,
+            dio,
             timeouts: 0,
             timeout_us,
             set_pindir_out,
@@ -417,7 +412,7 @@ impl SpiBusCyw43 for PioSpi {
     /// couldn't take the frame (see `rx_gate`), and would spin on the line.
     async fn wait_for_event(&mut self) {
         poll_fn(|_| {
-            if RX_ROOM.load(Ordering::Relaxed) != 0 && rd(SIO_GPIO_IN) & 1 << PIN_DIO != 0 {
+            if RX_ROOM.load(Ordering::Relaxed) != 0 && pins::get(self.dio) {
                 wr(PIO_IRQ, 1);
                 Poll::Ready(())
             } else {
@@ -446,12 +441,7 @@ impl<P: embedded_hal::digital::OutputPin<Error = core::convert::Infallible>> Inf
 
 // ------------------------------------------------------------------ credentials
 
-/// Wi-Fi network to join, stored in flash (the last 4 KB below the root
-/// filesystem) by tools/wifi.sh:
-/// magic "WIFI", SSID length, passphrase length, SSID[32], passphrase[64].
-const CREDS_ADDR: usize = 0x103F_F000;
-const CREDS_MAGIC: u32 = 0x4946_4957; // "WIFI"
-
+/// Wi-Fi network to join, from the board config (`config`, set in setup).
 #[derive(Clone, Copy)]
 pub struct Creds {
     ssid: &'static str,
@@ -459,21 +449,11 @@ pub struct Creds {
 }
 
 impl Creds {
-    pub fn from_flash() -> Option<Creds> {
-        // SAFETY: flash is mapped (XIP) and never written while we run.
-        let w = |i: usize| unsafe { read_volatile((CREDS_ADDR + 4 * i) as *const u32) };
-        let (slen, plen) = (w(1) as usize, w(2) as usize);
-        if w(0) != CREDS_MAGIC || slen == 0 || slen > 32 || plen > 64 {
+    pub fn from_config(c: &'static crate::config::Config) -> Option<Creds> {
+        if c.ssid_len == 0 {
             return None;
         }
-        // SAFETY: as above; lengths checked.
-        let (s, p) = unsafe {
-            (
-                core::slice::from_raw_parts((CREDS_ADDR + 12) as *const u8, slen),
-                core::slice::from_raw_parts((CREDS_ADDR + 44) as *const u8, plen),
-            )
-        };
-        Some(Creds { ssid: core::str::from_utf8(s).ok()?, pass: p })
+        Some(Creds { ssid: core::str::from_utf8(c.ssid()).ok()?, pass: c.pass() })
     }
 
     pub fn ssid(&self) -> &str {
@@ -483,7 +463,7 @@ impl Creds {
 
 // ------------------------------------------------------------------ driver task
 
-type Pwr = GpioPin<Gpio23, FunctionSioOutput, PullDown>;
+type Pwr = pins::Out;
 
 static mut STATE: cyw43::State = cyw43::State::new();
 /// The driver's network device once it is up (core1 only).
@@ -622,24 +602,81 @@ async fn run(pwr: Pwr, spi: PioSpi, creds: Option<Creds>) {
 }
 
 /// The RM2's pins, as `hal::gpio::Pins::new` hands them out.
-pub struct RadioPins {
-    pub pwr: GpioPin<Gpio23, FunctionNull, PullDown>,
-    pub dio: GpioPin<Gpio24, FunctionNull, PullDown>,
-    pub cs: GpioPin<Gpio25, FunctionNull, PullDown>,
-    pub clk: GpioPin<Gpio29, FunctionNull, PullDown>,
-}
+/// The radio's pins: WL_ON, DIO, CS, CLK (config.rs `wifi`).
+#[derive(Clone, Copy)]
+pub struct RadioPins(pub [u8; 4]);
 
 /// The driver future for `RadioService` (set up on core0, run on core1).
 pub fn driver(
     pio0: hal::pac::PIO0,
     resets: &mut hal::pac::RESETS,
     sys_hz: u32,
-    pins: RadioPins,
+    radio_pins: RadioPins,
     creds: Option<Creds>,
-) -> impl Future<Output = ()> + use<> {
-    let spi = PioSpi::new(pio0, resets, sys_hz, pins.dio, pins.clk, pins.cs);
-    let pwr = pins.pwr.into_push_pull_output_in_state(hal::gpio::PinState::Low);
-    run(pwr, spi, creds)
+) -> Radio {
+    let [pwr, dio, cs, clk] = radio_pins.0;
+    let spi = PioSpi::new(pio0, resets, sys_hz, dio, clk, cs);
+    pins::output(pwr, false);
+    Radio { pwr: pins::Out(pwr), spi, creds }
+}
+
+/// The radio, set up but not running: what its driver future starts from.
+/// Small, unlike the future (an async fn's future is as big as its largest
+/// state from the start, the whole cyw43 runner here), so core 0 hands this
+/// over and core 1 makes the future on its own stack.
+pub struct Radio {
+    pwr: Pwr,
+    spi: PioSpi,
+    creds: Option<Creds>,
+}
+
+impl Radio {
+    pub fn run(self) -> impl Future<Output = ()> {
+        run(self.pwr, self.spi, self.creds)
+    }
+}
+
+/// Setup's radio test: power the chip up on `radio_pins` and read its bus
+/// test register, as cyw43's `init` does first (cyw43 spi.rs: WL_ON low
+/// 20 ms then high 250 ms, then `read32_swapped(FUNC_BUS,
+/// REG_BUS_TEST_RO)` until it reads 0xFEEDBEAD). Returns what it read.
+/// PIO0 and the pins are reset afterwards.
+pub fn probe(resets: &mut hal::pac::RESETS, sys_hz: u32, radio_pins: RadioPins) -> u32 {
+    const FEEDBEAD: u32 = 0xFEED_BEAD;
+    const REG_BUS_TEST_RO: u32 = 0x14;
+    let wait_ms = |ms: u64| {
+        let t0 = io::now_us();
+        while io::now_us() - t0 < ms * 1000 {}
+    };
+    let [pwr, dio, cs, clk] = radio_pins.0;
+    // SAFETY: nothing else uses PIO0 while setup runs; it is reset below.
+    let pio0 = unsafe { hal::pac::PIO0::steal() };
+    let mut spi = PioSpi::new(pio0, resets, sys_hz, dio, clk, cs);
+    pins::output(pwr, false);
+    wait_ms(20);
+    pins::set(pwr, true);
+    wait_ms(250);
+    // cyw43 spi.rs: cmd_word(READ, INC_ADDR, FUNC_BUS, addr, 4), swap16
+    let cmd = (1u32 << 30 | (REG_BUS_TEST_RO & 0x1ffff) << 11 | 4).rotate_left(16);
+    let mut v = 0;
+    for _ in 0..20 {
+        let mut buf = [0u32; 1];
+        spi.cs.set_low_infallible();
+        spi.read(cmd, &mut buf);
+        spi.cs.set_high_infallible();
+        v = buf[0].rotate_left(16);
+        if v == FEEDBEAD {
+            break;
+        }
+        wait_ms(5);
+    }
+    resets.reset().modify(|_, w| w.pio0().set_bit());
+    resets.reset().modify(|_, w| w.pio0().clear_bit());
+    while !resets.reset_done().read().pio0().bit() {}
+    for p in radio_pins.0 {
+        pins::release(p);
+    }
+    v
 }
 
 /// Linux's address and gateway, from a DHCP ACK in `f` (if it is one).
@@ -867,6 +904,9 @@ impl<F: Future<Output = ()>> RadioService<F> {
 }
 
 impl<F: Future<Output = ()>> RadioService<F> {
+    /// Not inlined: it is placed in SRAM by name (core1.x), and inlined
+    /// into core1_loop it would grow that past what SRAM has room for.
+    #[inline(never)]
     pub fn poll(&mut self) {
         let mut cx = Context::from_waker(waker());
         // Linux -> radio: as many frames as the driver takes. A frame

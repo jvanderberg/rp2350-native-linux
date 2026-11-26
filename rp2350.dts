@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * RP2350, Cortex-M33 core 0 running nommu Linux. Core 1 runs the I/O
- * firmware (boot/) and owns USB, the Wi-Fi radio (PIO0,
- * GP23-25/29) and the SD card (SPI1, GP8-11); Linux uses only what is
- * listed here.
+ * firmware (boot/) and owns USB, the Wi-Fi radio (PIO0) and the SD card;
+ * Linux uses only what is listed here. The pins, the clocks and the RAM
+ * size are this board's defaults: the boot stub applies the board config
+ * (set in its setup screen) to a copy of this tree before it starts Linux
+ * (boot/src/fdt.rs).
  */
 /dts-v1/;
 
@@ -17,9 +19,14 @@
 	chosen {
 		bootargs = "console=ttyRC0 earlycon root=/dev/mtdblock1 rootfstype=squashfs ro init=/sbin/overlay-init";
 		stdout-path = &rcon;
+		/* the kernel feeds the watchdog the stub starts, until init runs
+		 * (linux/mach-rp2350/board.c, boot/src/boot.rs) */
+		rp2350,boot-watchdog;
 	};
 
-	/* PSRAM through the ATRANS5/6 windows (set up by the boot stub) */
+	/* PSRAM through the ATRANS5/6 windows (set up by the boot stub, which
+	 * gives the size it found, less the 16 KiB at the top it keeps for its
+	 * copy of this tree) */
 	memory@11400000 {
 		device_type = "memory";
 		reg = <0x11400000 0x800000>;
