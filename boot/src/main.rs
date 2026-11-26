@@ -1,15 +1,22 @@
 //! Boot stub for native nommu Linux on the RP2350's Cortex-M33 cores.
 //!
 //! Core 0:
-//! 1. clocks (348 MHz, `board`), TIMER0 out of reset with its 1 MHz tick,
-//!    PSRAM on QMI CS1;
-//! 2. the kernel's RAM: ATRANS5/6 map the 8 MiB PSRAM at 0x11400000 (ATRANS4,
-//!    0x11000000, stays for user processes);
-//! 3. the console rings in SRAM8/9 (0x20080000), the I/O area (`io`,
-//!    0x20068000), the flash routine (`flash`) and the peripherals core 1
-//!    runs (USB, the Wi-Fi radio on PIO0, the SD card on SPI1), then core 1;
-//! 4. jumps to the XIP kernel at `KERNEL` (Thumb), r0 = 0, r1 = ~0,
-//!    r2 = the DTB at `DTB`.
+//! 1. the board config (`config`, from flash): it gives the CPU speed;
+//!    clocks at that speed (`board`), TIMER0 out of reset with its 1 MHz tick;
+//! 2. the console rings in SRAM8/9 (0x20080000), the I/O area (`io`,
+//!    0x20068000), the flash routine (`flash`), and the USB console, polled
+//!    from core 0 until core 1 takes it over;
+//! 3. the setup screen (`setup`) if the config is missing or invalid, after
+//!    two boots in a row that didn't reach Linux's init, or if Linux asked
+//!    for it (`boot`); otherwise the countdown, where a key opens it;
+//! 4. PSRAM on QMI CS1 (setup again if none answers) and the kernel's RAM:
+//!    ATRANS5/6 map up to 8 MiB of it at 0x11400000 (ATRANS4, 0x11000000,
+//!    stays for user processes);
+//! 5. the peripherals core 1 runs (the SD card on SPI0 or SPI1, the Wi-Fi
+//!    radio on PIO0, on the config's pins), then core 1;
+//! 6. the device tree for Linux (`fdt`: the one in flash at `DTB` with the
+//!    config applied), the boot watchdog (`boot`), and a jump to the XIP
+//!    kernel at `KERNEL` (Thumb), r0 = 0, r1 = ~0, r2 = that tree.
 //!
 //! Core 1 is the I/O processor (`core1_loop`): the USB
 //! console (`console`), Wi-Fi (`wifi`: frames for Linux's eth0) and the SD
@@ -24,14 +31,19 @@
 #![no_main]
 
 mod board;
+mod boot;
+mod config;
 mod console;
+mod fdt;
 mod flash;
 mod io;
+mod pins;
 mod sd;
+mod setup;
 mod wifi;
 
 use core::mem::MaybeUninit;
-use core::ptr::{addr_of_mut, write_volatile};
+use core::ptr::{addr_of, addr_of_mut, write_volatile};
 use core::sync::atomic::{compiler_fence, fence, Ordering};
 
 use console::ring_print;
@@ -58,6 +70,8 @@ const RADIO_BRING_UP_MS: u32 = 10_000;
 // ---- core 1: the I/O processor ----------------------------------------------------
 
 static mut USB_BUS: MaybeUninit<UsbBusAllocator<hal::usb::UsbBus>> = MaybeUninit::uninit();
+/// The config this boot runs with (the Wi-Fi network is borrowed from it).
+static mut CONFIG: config::Config = config::Config::DEFAULT;
 /// 24 KiB (6144 words): the radio's driver future lives on it.
 static CORE1_STACK: hal::multicore::Stack<6144> = hal::multicore::Stack::new();
 
@@ -74,22 +88,22 @@ const IRQ_USBCTRL: u32 = 14;
 const IRQ_PIO0_0: u32 = 15;
 const IRQ_SIO_BELL: u32 = 26;
 
-/// Everything core 1 runs, built on core 0.
-struct Io<F> {
-    usb: hal::usb::UsbBus,
-    radio: F,
+/// Everything core 1 runs, built on core 0. All of it small: core 0's
+/// stack is tight (memory.x), so the radio's driver future is made here,
+/// on core 1's.
+struct Io {
+    con: console::Console,
+    radio: wifi::Radio,
     sd: sd::SdService,
 }
 // SAFETY: built on core 0 before core 1 starts, then core 1's alone.
-unsafe impl<F> Send for Io<F> {}
+unsafe impl Send for Io {}
 
-fn core1_loop<F: core::future::Future<Output = ()>>(io: Io<F>, sys_hz: u32) -> ! {
-    // SAFETY: the bus allocator is built once, here, on core 1.
-    let usb_bus: &'static UsbBusAllocator<hal::usb::UsbBus> =
-        unsafe { (*addr_of_mut!(USB_BUS)).write(UsbBusAllocator::new(io.usb)) };
-    let mut con = console::Console::new(usb_bus);
+fn core1_loop(io: Io, sys_hz: u32) -> ! {
+    flash::CORE1_UP.store(true, Ordering::SeqCst);
+    let mut con = io.con;
     // the radio's service (and its driver future) stays in this frame
-    let mut radio = wifi::RadioService::new(io.radio, RADIO_BRING_UP_MS);
+    let mut radio = wifi::RadioService::new(io.radio.run(), RADIO_BRING_UP_MS);
     let mut sd = io.sd;
     // wake sources for wfi; nothing is taken (PRIMASK stays set)
     cortex_m::interrupt::disable();
@@ -169,6 +183,16 @@ fn boot_kernel(entry: u32, dtb: u32) -> ! {
     }
 }
 
+/// `say`, then core 0 polls the console for a moment so it gets out
+/// before core 1 runs (core 1 polls it from then on).
+fn say_now(con: &mut console::Console, args: core::fmt::Arguments) {
+    say(args);
+    let t0 = rd(TIMERAWL);
+    while rd(TIMERAWL).wrapping_sub(t0) < 30_000 {
+        con.poll();
+    }
+}
+
 fn say(args: core::fmt::Arguments) {
     let mut m = Msg::new();
     let _ = core::fmt::write(&mut m, args);
@@ -201,22 +225,80 @@ fn copy_core1_text() {
     cortex_m::asm::isb();
 }
 
+/// Core 0's stack runs from the top of RAM down to .bss's end, and nothing
+/// stops it there (memory.x). `stack_paint` fills what is free with this,
+/// and `stack_used` finds how much was ever used, for the boot banner.
+const STACK_PAINT: u32 = 0x5717_c0de;
+
+fn stack_bounds() -> (usize, usize) {
+    unsafe extern "C" {
+        static mut __ebss: u32;
+        static mut _stack_start: u32;
+    }
+    (&raw mut __ebss as usize, &raw mut _stack_start as usize)
+}
+
+#[inline(never)]
+fn stack_paint() {
+    let (lo, _) = stack_bounds();
+    let sp = cortex_m::register::msp::read() as usize;
+    let mut p = lo.next_multiple_of(4);
+    while p + 256 < sp {
+        // SAFETY: between .bss's end and well below the stack pointer:
+        // free stack nothing uses yet.
+        unsafe { write_volatile(p as *mut u32, STACK_PAINT) };
+        p += 4;
+    }
+}
+
+/// The deepest core 0's stack went, and how much there is.
+fn stack_used() -> (usize, usize) {
+    let (lo, hi) = stack_bounds();
+    let mut p = lo.next_multiple_of(4);
+    // SAFETY: as in `stack_paint`; reads only.
+    while p < hi && unsafe { core::ptr::read_volatile(p as *const u32) } == STACK_PAINT {
+        p += 4;
+    }
+    (hi - p, hi - lo)
+}
+
 #[hal::entry]
 fn main() -> ! {
     board::core1_hold();
+    stack_paint();
     #[cfg(feature = "core1-sram")]
     copy_core1_text();
     board::bootsel_if_requested();
+    boot::watchdog_off();
     rtt_init_print!();
     let mut pac = hal::pac::Peripherals::take().unwrap();
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
-    let clocks =
-        board::init_clocks(pac.XOSC, pac.CLOCKS, pac.PLL_SYS, pac.PLL_USB, &mut pac.RESETS, &mut watchdog);
+    // this boot counts as failed until Linux's init says otherwise, and the
+    // watchdog runs from here (boot.rs)
+    let failed = boot::failed_boots();
+    boot::set_failed_boots(failed + 1);
+    boot::watchdog_arm();
+    // the config first: it has the CPU speed; after failed boots, the
+    // stock speed, in case the saved one is what fails
+    let loaded = config::Config::load();
+    let mut cfg = loaded.unwrap_or_else(|_| config::Config::defaults_from_flash());
+    let cpu = if failed >= boot::FAILED_BOOTS_MAX { 0 } else { cfg.cpu };
+    let preset = &board::CPU_PRESETS[usize::from(cpu)];
+    let clocks = board::init_clocks(
+        preset,
+        pac.XOSC,
+        pac.CLOCKS,
+        pac.PLL_SYS,
+        pac.PLL_USB,
+        &mut pac.RESETS,
+        &mut watchdog,
+    );
     // TIMER0 out of reset (its tick comes from init_clocks' tick generation)
     let _timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
     board::timer_ignore_debug_halt();
     let mut sio = hal::Sio::new(pac.SIO);
-    let pins = hal::gpio::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
+    // the GPIO banks out of reset; the pins are used by number from here (`pins`)
+    let _ = hal::gpio::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
     use hal::Clock as _;
     let sys_hz = clocks.system_clock.freq().to_Hz();
     let peri_hz = clocks.peripheral_clock.freq().to_Hz();
@@ -224,60 +306,96 @@ fn main() -> ! {
     console::ring_init();
     io::init();
     flash::init();
+    // the USB console, polled here until core 1 takes it over
+    let usb = hal::usb::UsbBus::new(pac.USB, pac.USB_DPRAM, clocks.usb_clock, true, &mut pac.RESETS);
+    // SAFETY: the bus allocator is built once, here, before core 1 runs.
+    let usb_bus: &'static UsbBusAllocator<hal::usb::UsbBus> =
+        unsafe { (*addr_of_mut!(USB_BUS)).write(UsbBusAllocator::new(usb)) };
+    let mut con = console::Console::new(usb_bus);
+
+    say(format_args!(
+        "\nnativeboot: {} at {} MHz, {}.{:02} V\n",
+        pins::chip_name(),
+        sys_hz / 1_000_000,
+        preset.mv / 1000,
+        preset.mv % 1000 / 10
+    ));
+
+    // setup, or the countdown. A sector tools/wifi.sh wrote (a network
+    // only) boots the defaults with that network, as before setup existed,
+    // so a board without a terminal still boots.
+    let request = boot::take_request();
+    let why = match loaded {
+        Err(config::Missing::Empty) => Some(setup::Why::Empty),
+        Err(config::Missing::Invalid) => Some(setup::Why::Invalid),
+        _ if failed >= boot::FAILED_BOOTS_MAX => Some(setup::Why::FailedBoots(failed)),
+        _ if request == boot::REQ_SETUP => Some(setup::Why::Requested),
+        _ => None,
+    };
+    let mut saved = loaded.ok();
+    let mut hw = setup::Hw { con: &mut con, resets: &mut pac.RESETS, sys_hz, peri_hz, cpu };
+    let legacy = matches!(loaded, Err(config::Missing::Legacy));
+    match why {
+        Some(w) => cfg = setup::run(&mut hw, cfg, &mut saved, w),
+        None if request != boot::REQ_NO_COUNTDOWN && cfg.countdown > 0 && setup::countdown(hw.con, cfg.countdown) => {
+            let w = if legacy { setup::Why::Legacy } else { setup::Why::Key };
+            cfg = setup::run(&mut hw, cfg, &mut saved, w);
+        }
+        None => {}
+    }
+
     // PSRAM first: its setup puts the QMI in direct mode, when no other core
     // may fetch from flash (core 1 starts below)
-    let ps = match board::psram_init(pins.gpio0, sys_hz) {
-        Ok(p) => p,
-        Err(e) => {
-            say(format_args!("nativeboot: PSRAM init failed: {:?}\n", e));
-            loop {
-                cortex_m::asm::wfi();
+    let ps = loop {
+        let want = if cfg.psram_cs == config::CS_AUTO { None } else { Some(cfg.psram_cs) };
+        let used = cfg.used_pins();
+        let mut cands = [0u8; 4];
+        let mut n = 0;
+        for &p in &pins::CS1_PINS {
+            if pins::exists(p) && used.name(p).is_none() {
+                cands[n] = p;
+                n += 1;
+            }
+        }
+        match board::psram_init(want, &cands[..n], sys_hz) {
+            Ok(p) => break p,
+            Err(e) => {
+                say_now(hw.con, format_args!("nativeboot: PSRAM init failed: {:?}\n", e));
+                cfg = setup::run(&mut hw, cfg, &mut saved, setup::Why::NoPsram);
             }
         }
     };
-    // kernel RAM: ATRANS5 -> PSRAM 0..4 MiB, ATRANS6 -> 4..8 MiB (SIZE 4 MiB each)
-    wr(QMI_ATRANS + 4 * 5, 0x400 << 16);
-    wr(QMI_ATRANS + 4 * 6, 0x400 << 16 | 0x400);
+    let setup::Hw { con: con_ref, resets, .. } = hw;
+    let mem = ps.size.min(8 << 20);
+    // kernel RAM: ATRANS5 -> PSRAM 0..4 MiB, ATRANS6 -> 4..8 MiB (SIZE in 4 KiB pages)
+    let pages = |b: u32| b >> 12;
+    wr(QMI_ATRANS + 4 * 5, pages(mem.min(4 << 20)) << 16);
+    if mem > 4 << 20 {
+        wr(QMI_ATRANS + 4 * 6, pages(mem - (4 << 20)) << 16 | 0x400);
+    }
     xip_cache_invalidate();
+    // SAFETY: core 0, before core 1 runs; read only from here on.
+    unsafe { *addr_of_mut!(CONFIG) = cfg };
+    // SAFETY: as above.
+    let cfg: &'static config::Config = unsafe { &*addr_of!(CONFIG) };
 
-    say(format_args!("\nnativeboot: Cortex-M33 at {} MHz{}\n", sys_hz / 1_000_000, board::CLOCK_NOTE));
-
-    // the SD card (SPI1), looked for now so a card that is in is there when
-    // Linux probes
-    use hal::fugit::RateExtU32;
-    let spi1: sd::Spi1 = hal::spi::Spi::<_, _, _, 8>::new(
-        pac.SPI1,
-        (pins.gpio11.reconfigure(), pins.gpio8.reconfigure(), pins.gpio10.reconfigure()),
-    )
-    .init(&mut pac.RESETS, peri_hz.Hz(), 400.kHz(), embedded_hal::spi::MODE_0);
-    let sd = sd::SdService::new(sd::BoardSd::new(spi1, pins.gpio9.reconfigure(), peri_hz));
-    say(format_args!(
-        "nativeboot: SD card: {}\n",
+    // the SD card, looked for now so a card that is in is there when Linux probes
+    let sd = sd::SdService::new(sd::BoardSd::new(sd::SdPins(cfg.sd), resets, peri_hz));
+    say_now(con_ref, format_args!(
+        "nativeboot: SD card (SPI{}): {}\n",
+        pins::spi_block(cfg.sd[config::SD_SCK]),
         if sd.present() { "present" } else { "none" }
     ));
 
     // the Wi-Fi radio (PIO0); it comes up on core 1 while Linux boots
-    let creds = wifi::Creds::from_flash();
+    let creds = wifi::Creds::from_config(cfg);
     match creds {
         Some(c) => say(format_args!("nativeboot: Wi-Fi: joining {:?} in the background\n", c.ssid())),
-        None => say(format_args!("nativeboot: Wi-Fi: no network configured (tools/wifi.sh)\n")),
+        None => say(format_args!("nativeboot: Wi-Fi: no network configured (setup)\n")),
     }
-    let radio_pins = wifi::RadioPins { pwr: pins.gpio23, dio: pins.gpio24, cs: pins.gpio25, clk: pins.gpio29 };
-    let radio = wifi::driver(pac.PIO0, &mut pac.RESETS, sys_hz, radio_pins, creds);
-    let usb = hal::usb::UsbBus::new(pac.USB, pac.USB_DPRAM, clocks.usb_clock, true, &mut pac.RESETS);
-    let io = Io { usb, radio, sd };
+    let radio = wifi::driver(pac.PIO0, resets, sys_hz, wifi::RadioPins(cfg.wifi), creds);
 
-    let mut mc = hal::multicore::Multicore::new(&mut pac.PSM, &mut pac.PPB, &mut sio.fifo);
-    mc.cores()[1].spawn(CORE1_STACK.take().unwrap(), move || core1_loop(io, sys_hz)).unwrap();
-
-    say(format_args!(
-        "nativeboot: PSRAM {} KiB at {} MHz, kernel RAM 0x11400000; kernel {:#x}, DTB {:#x}\n",
-        ps.size >> 10,
-        ps.sck_hz / 1_000_000,
-        KERNEL,
-        DTB
-    ));
-
+    // the device tree for Linux, before core 1 runs (the copy is in its RAM)
     let dtb_magic = u32::from_be(rd(DTB as usize));
     let k0 = rd(KERNEL as usize);
     if dtb_magic != 0xd00d_feed || k0 == 0xffff_ffff {
@@ -285,15 +403,47 @@ fn main() -> ! {
             "nativeboot: no kernel/DTB in flash (kernel word {:08x}, DTB magic {:08x}); run load.sh\n",
             k0, dtb_magic
         ));
+        boot::watchdog_off();
         loop {
-            cortex_m::asm::wfi();
+            con.poll();
         }
     }
+    let tree = fdt::patch(DTB, cfg, ps.cs, mem, sys_hz);
+
+    let io = Io { con, radio, sd };
+    let mut mc = hal::multicore::Multicore::new(&mut pac.PSM, &mut pac.PPB, &mut sio.fifo);
+    mc.cores()[1].spawn(CORE1_STACK.take().unwrap(), move || core1_loop(io, sys_hz)).unwrap();
+
+    say(format_args!(
+        "nativeboot: PSRAM {} KiB (CS GP{}) at {} MHz, kernel RAM {} KiB at 0x11400000; kernel {:#x}, DTB {:#x}{}\n",
+        ps.size >> 10,
+        ps.cs,
+        ps.sck_hz / 1_000_000,
+        (mem - if tree.addr == DTB { 0 } else { fdt::RESERVE }) >> 10,
+        KERNEL,
+        tree.addr,
+        if tree.addr == DTB { " (unpatched)" } else { "" }
+    ));
+    if tree.disabled != 0 {
+        let mut m = Msg::new();
+        let _ = core::fmt::write(&mut m, format_args!("nativeboot: core 1 has their pins, so Linux gets no:"));
+        for n in fdt::disabled_names(tree.disabled) {
+            let _ = core::fmt::write(&mut m, format_args!(" {}", n));
+        }
+        say(format_args!("{}\n", m.as_str()));
+    }
+    let (used, size) = stack_used();
+    say(format_args!("nativeboot: core 0 stack: {} of {} bytes used\n", used, size));
     say(format_args!("nativeboot: starting Linux\n"));
     // give core 1 a moment to forward the banner if a terminal is open
     let t0 = rd(TIMERAWL);
     while rd(TIMERAWL).wrapping_sub(t0) < 20_000 {}
-    boot_kernel(KERNEL, DTB)
+    if tree.watchdog {
+        boot::watchdog_arm();
+    } else {
+        boot::watchdog_off();
+    }
+    boot_kernel(KERNEL, tree.addr)
 }
 
 /// A small stack-allocated line buffer for formatting.

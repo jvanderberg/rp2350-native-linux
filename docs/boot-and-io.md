@@ -9,16 +9,20 @@ of flash.
 
 On core 0, the stub:
 
-1. Sets the clocks to 348 MHz, at 1.20 V, and the flash's QSPI clock to
-   116 MHz.
-2. Brings up the PSRAM on QMI CS1.
-3. Maps PSRAM 0–8 MiB at 0x11400000 through ATRANS5 and ATRANS6.
-4. Sets up the console rings in SRAM8/9 (0x20080000) and the I/O area
-   (0x20068000).
+1. Reads the board config (below) and sets the clocks to its CPU speed,
+   and the flash's QSPI clock to at most 116 MHz.
+2. Sets up the console rings in SRAM8/9 (0x20080000), the I/O area
+   (0x20068000) and the USB console, which core 0 polls until core 1 takes
+   it over.
+3. Opens the setup screen if it has to, or counts down for a key that
+   opens it.
+4. Brings up the PSRAM on QMI CS1, and maps up to 8 MiB of it at
+   0x11400000 through ATRANS5 and ATRANS6.
 5. Looks for an SD card, and loads the Wi-Fi chip's firmware.
-6. Starts core 1.
-7. Clears `ACTLR.EXTEXCLALL` and jumps to the XIP kernel at 0x10D80000 with
-   r2 pointing at the DTB (0x103F8000).
+6. Copies the device tree into the top 16 KiB of the PSRAM with the config
+   applied, and starts core 1.
+7. Starts the boot watchdog, clears `ACTLR.EXTEXCLALL` and jumps to the
+   XIP kernel at 0x10D80000 with r2 pointing at that copy.
 
 Two orderings matter:
 
@@ -28,6 +32,104 @@ Two orderings matter:
   `Multicore::spawn` sets it, which sends every LDREX/STREX to the bus. The
   XIP/PSRAM path has no exclusive monitor, so STREX to kernel RAM would
   always fail and the kernel would hang in its first cmpxchg loop.
+
+## Setup and the board config
+
+One image runs on any RP2350A or RP2350B board with PSRAM, an SD card and
+a CYW43439 radio. What differs from board to board is in the board
+config, set in the stub's setup screen on the USB console and kept in the
+4 KiB flash sector at 0x103FF000 (`boot/src/config.rs`). Nothing else
+writes it: Linux's flash routine refuses that sector.
+
+| Setting | Values |
+|---|---|
+| CPU speed | one of the five below |
+| PSRAM chip select | GP0, GP8, GP19 or GP47 (the pins QMI CS1 can be on), or found at boot |
+| SD card | a block of four pins in the SPI order, MISO, CS, SCK, MOSI (GP0–3, GP4–7, ... GP44–47); the block decides SPI0 or SPI1 (GP8–11, SPI1, by default) |
+| Wi-Fi radio | WL_ON, DIO, CS, CLK: any pins, with DIO and CLK both in GP0–31 or both in GP16–47 (PIO0 sees 32 at a time) |
+| Wi-Fi network | name and WPA passphrase (none for an open network) |
+| Setup countdown | 0–60 s, 10 by default |
+
+The sector has space reserved for options to come; it is zero now and
+covered by the CRC.
+
+**When setup opens.** When the sector holds no valid config (a new board
+starts in setup and waits for a terminal); after two boots in a row that
+didn't reach Linux's init; when Linux asked for it (`reboot config`); when
+no PSRAM answers; and on any key during the countdown. Otherwise the stub
+waits the countdown, then boots. A sector `tools/wifi.sh` wrote (older
+images: a network only) isn't a config, but it boots the defaults with that
+network, as before, so a board without a terminal keeps booting; save in
+setup to replace it.
+
+**The screen.** Up and down choose a line, and left and right change its
+value. Enter on CPU speed, PSRAM chip select or SD card pins opens a list
+of the choices (up and down, Enter to take one; a choice whose pins
+something else uses says so). On the Wi-Fi lines and the countdown, Enter
+types a value. On an action, it runs it. Esc cancels, and Ctrl-L draws the
+screen again. The actions find the PSRAM, test the SD
+card (it reports the card's size; pins the radio or the PSRAM has are
+refused) and the radio (it powers the chip and reads its bus test word,
+0xFEEDBEAD), save and boot, boot the saved settings (dropping what was
+changed on the screen), and restore the defaults. Saving checks the config first:
+no pin used twice, the SD pins on one SPI block, a passphrase of 8 to 63
+characters. A new CPU speed takes a reboot, which skips the countdown.
+
+**Failed boots.** POWMAN's scratch registers survive the watchdog's chip
+resets (`boot/src/boot.rs`). The stub counts each boot as it starts; Linux
+zeroes the count when `/sbin/overlay-init` writes `/proc/rp2350/boot_ok`.
+The watchdog, at its longest (about 16.7 s), runs from the stub's start,
+fed while the countdown and setup wait, so a CPU speed that hangs the stub
+itself resets the board too. Before it starts Linux the stub starts the
+watchdog again if the device tree has `/chosen/rp2350,boot-watchdog` (and
+stops it if not), and `linux/mach-rp2350/board.c` feeds it once a second
+until `boot_ok`, then stops it. The kernel feeds it for two minutes at
+most, so a boot that hangs or panics, or never gets to `boot_ok`, resets
+the board and counts as a failed boot. At two, setup opens, with the clocks
+at the stock 150 MHz in case the saved speed is what fails; saving (or
+booting the saved settings) goes back to the saved speed.
+
+**`reboot config`.** `/sbin/reboot` is a script that writes `config` to
+`/proc/rp2350/next_boot` before it runs BusyBox's reboot; the next boot
+opens setup. `reboot(2)` with `LINUX_REBOOT_CMD_RESTART2` and `"config"`
+does the same.
+
+**What Linux is told.** The stub copies the device tree from flash into
+the top 16 KiB of the PSRAM, which the memory node then leaves out
+(`boot/src/fdt.rs`), and changes in it: every `clock-frequency` to the CPU
+speed; the memory size to the PSRAM's (at most 8 MiB); `gpio-reserved-ranges`
+and `gpio-line-names` to core 1's pins (`PSRAM_CS`, `SD_MISO`, ..., `WL_CLK`)
+and those of the Linux peripherals that stay on; and `status = "disabled"`
+on i2c0, i2c1, spi0 or the ADC when core 1 has one of their pins, or SPI0
+for the SD card. On an RP2350A, GP30–47 are reserved and the ADC is off.
+The boot banner lists what was turned off.
+
+### CPU speed
+
+| Setting | Core voltage | Flash and PSRAM clock |
+|---|---|---|
+| 150 MHz (stock) | 1.10 V | 75 MHz |
+| 200 MHz | 1.10 V | 100 MHz |
+| 250 MHz | 1.15 V | 83 MHz |
+| 300 MHz | 1.15 V | 100 MHz |
+| 348 MHz | 1.20 V | 116 MHz |
+
+The flash and the PSRAM run at clk_sys over the smallest divider that
+gives at most 116 MHz; the flash's read delay is at least 5.7 ns at each
+speed (`board.rs`). Each setting was tested on the board, set and saved
+through the setup screen: Linux booted to login with the SD card, swap
+and Wi-Fi up, and:
+
+| Setting | BogoMIPS | md5sum of 10 MB from /dev/zero | 10 MB read from the SD card |
+|---|---|---|---|
+| 150 MHz | 99.7 | 5.18 s | 4.77 s |
+| 200 MHz | 133.0 | 3.96 s | 3.53 s |
+| 250 MHz | 166.3 | 4.20 s | 4.13 s |
+| 300 MHz | 199.1 | 3.54 s | 3.39 s |
+| 348 MHz | 231.0 | 3.09 s | 3.32 s |
+
+Most of what the system does waits on the flash and the PSRAM, so 250 MHz
+(at 83 MHz on the QSPI bus) is slower than 200 MHz (at 100 MHz).
 
 The M33 needs no CPU support patches in the kernel: upstream 6.12 already
 identifies it (`__v7m_cm33_proc_info`). The kernel side of the machine is
@@ -77,9 +179,8 @@ without an executor. Its bus is a port of embassy's `cyw43-pio` to
 rp235x-hal on PIO0, with the CPU feeding the PIO's FIFOs where the original
 uses DMA.
 
-- It joins the network stored in the Wi-Fi settings sector (0x103FF000,
-  which it only reads; `tools/wifi.sh` writes it), and rejoins when the
-  link goes down.
+- It joins the network in the board config (set in setup), and rejoins
+  when the link goes down.
 - Ethernet frames go to and from `rp2350-net.c` (`eth0`) through two rings
   of four slots in the I/O area.
 - **Receive backpressure.** The cyw43 driver reads every frame the chip
@@ -178,8 +279,8 @@ erase or program, restores the QMI's XIP setup (the ROM overwrites it:
 read slot, core 1 still answers the park request.
 
 - It writes only `/home` (0x10100000–0x101FFFFF) and a scratch region
-  (0x10FF0000–0x10FFFFFF). The Wi-Fi settings sector is never written by
-  Linux.
+  (0x10FF0000–0x10FFFFFF). The board config sector is written only by
+  the stub's setup screen, before Linux runs.
 - A 4 KiB erase stalls the whole system for about 45 ms. The `stats` file
   in the flash device's sysfs directory has the longest stall.
 
@@ -200,7 +301,9 @@ The kernel mounts the squashfs (`root=/dev/mtdblock1`) and runs
    looks for a node's magic). It never formats or erases it; without jffs2,
    `/home` is in RAM.
 5. Binds `/home/root` over `/root`.
-6. Pivots into the overlay and starts busybox init. The squashfs, with the
+6. Writes `/proc/rp2350/boot_ok` (the boot got this far: see "Failed
+   boots" above).
+7. Pivots into the overlay and starts busybox init. The squashfs, with the
    romfs files bound over it, stays visible at `/rom`.
 
 What makes a boot slow is loading text out of the squashfs: an exec of a

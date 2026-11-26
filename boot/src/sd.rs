@@ -1,7 +1,7 @@
 //! The SD card for Linux (linux/drivers/rp2350/rp2350-sd.c):
-//! the card on SPI1 (GP8 MISO, pulled up; GP9 chip select, a GPIO; GP10 SCK;
-//! GP11 MOSI) run by `sdcard` (sdcard/) (commands with CRCs, retries,
-//! insertion and removal) on core 1.
+//! the card on SPI0 or SPI1, on the pins the board config gives (MISO,
+//! pulled up; the chip select, a GPIO; SCK; MOSI), run by `sdcard`
+//! (sdcard/) (commands with CRCs, retries, insertion and removal) on core 1.
 //!
 //! Linux posts one request at a time in the I/O area (`BLK_*`): a sector,
 //! read or write, and up to `BLK_MAX_SEGS` buffers in its RAM. For a write,
@@ -12,29 +12,32 @@
 //! (0 while there is none); a change of card bumps `BLK_GEN` and rings too.
 //!
 //! The bus (`BoardSd`) uses TIMER0 as its clock: the
-//! transfers drive the PL022's registers, keeping its FIFOs full.
+//! transfers drive the PL022's registers, keeping its FIFOs full. It is set
+//! up by register too (`BoardSd::new`, as rp235x-hal's spi.rs does it), so
+//! that the block and the pins can be chosen at run time.
 
-use embedded_hal::digital::OutputPin as _;
-use hal::fugit::RateExtU32;
 use rp235x_hal as hal;
 use sdcard::{SdCard, SdError, crc16, crc16_byte};
 
 use crate::io::{self, *};
+use crate::pins;
 
-pub type Spi1 = hal::spi::Spi<
-    hal::spi::Enabled,
-    hal::pac::SPI1,
-    (
-        hal::gpio::Pin<hal::gpio::bank0::Gpio11, hal::gpio::FunctionSpi, hal::gpio::PullNone>,
-        hal::gpio::Pin<hal::gpio::bank0::Gpio8, hal::gpio::FunctionSpi, hal::gpio::PullUp>,
-        hal::gpio::Pin<hal::gpio::bank0::Gpio10, hal::gpio::FunctionSpi, hal::gpio::PullNone>,
-    ),
-    8,
->;
-pub type Spi1Cs = hal::gpio::Pin<hal::gpio::bank0::Gpio9, hal::gpio::FunctionSioOutput, hal::gpio::PullNone>;
-
-const SSPDR: *mut u32 = 0x4008_8008 as *mut u32;
-const SSPSR: *const u32 = 0x4008_800C as *const u32;
+const SPI0_BASE: usize = 0x4008_0000;
+const SPI1_BASE: usize = 0x4008_8000;
+const SSPCR0: usize = 0x00;
+const SSPCR1: usize = 0x04;
+const SSPDR_OFF: usize = 0x08;
+const SSPSR_OFF: usize = 0x0c;
+const SSPCPSR: usize = 0x10;
+const SSPDMACR: usize = 0x24;
+const CR1_SSE: u32 = 1 << 1;
+/// 8-bit frames, Motorola format, mode 0 (CPOL 0, CPHA 0)
+const CR0_DSS_8: u32 = 7;
+const CR0_SCR_LSB: u32 = 8;
+/// The block's data and status registers, set by `BoardSd::new` (before
+/// core 1 runs; read only after).
+static mut SSPDR: *mut u32 = (SPI1_BASE + SSPDR_OFF) as *mut u32;
+static mut SSPSR: *const u32 = (SPI1_BASE + SSPSR_OFF) as *const u32;
 const SR_TNF: u32 = 1 << 1;
 const SR_RNE: u32 = 1 << 2;
 const SR_BSY: u32 = 1 << 4;
@@ -47,9 +50,13 @@ const RD_SLOT_LEN: usize = 512;
 const RAM_START: u32 = 0x1140_0000;
 const RAM_END: u32 = 0x11c0_0000;
 
+/// The card's pins: MISO, CS, SCK, MOSI (config.rs `sd`).
+#[derive(Clone, Copy)]
+pub struct SdPins(pub [u8; 4]);
+
 pub struct BoardSd {
-    spi: Spi1,
-    cs: Spi1Cs,
+    base: usize,
+    cs: u8,
     peri_hz: u32,
     /// The rate the PL022 really runs at (clk_peri over its dividers)
     actual_hz: u32,
@@ -60,31 +67,102 @@ pub struct BoardSd {
 }
 
 impl BoardSd {
-    pub fn new(spi: Spi1, mut cs: Spi1Cs, peri_hz: u32) -> Self {
-        let _ = cs.set_high();
-        BoardSd { spi, cs, peri_hz, actual_hz: 0, rd_filled: rd(BLK_RD_FILLED), rd_crc: 0 }
+    /// The SPI block of the pins (config.rs checked they share one), reset
+    /// and set up at 400 kHz, and the pins on it.
+    pub fn new(p: SdPins, resets: &mut hal::pac::RESETS, peri_hz: u32) -> Self {
+        let [miso, cs, sck, mosi] = p.0;
+        let block = pins::spi_block(sck);
+        let base = if block == 0 { SPI0_BASE } else { SPI1_BASE };
+        resets.reset().modify(|_, w| if block == 0 { w.spi0().set_bit() } else { w.spi1().set_bit() });
+        resets.reset().modify(|_, w| if block == 0 { w.spi0().clear_bit() } else { w.spi1().clear_bit() });
+        while !(if block == 0 { resets.reset_done().read().spi0().bit() } else { resets.reset_done().read().spi1().bit() }) {}
+        // SAFETY: core 0, before core 1 runs; read only from then on.
+        unsafe {
+            SSPDR = (base + SSPDR_OFF) as *mut u32;
+            SSPSR = (base + SSPSR_OFF) as *const u32;
+        }
+        let mut b = BoardSd { base, cs, peri_hz, actual_hz: 0, rd_filled: rd(BLK_RD_FILLED), rd_crc: 0 };
+        b.actual_hz = b.set_baudrate(400_000);
+        wr(base + SSPCR0, (rd(base + SSPCR0) & !0xff) | CR0_DSS_8);
+        wr(base + SSPDMACR, 3);
+        wr(base + SSPCR1, rd(base + SSPCR1) | CR1_SSE);
+        pins::output(cs, true);
+        pins::set_function(miso, pins::FUNC_SPI);
+        pins::set_pull(miso, true, false);
+        for p in [sck, mosi] {
+            pins::set_function(p, pins::FUNC_SPI);
+            pins::set_pull(p, false, false);
+        }
+        b
     }
+
+    /// The card's pins back to how reset left them (after a test in setup).
+    pub fn release(p: SdPins) {
+        for pin in p.0 {
+            pins::release(pin);
+        }
+    }
+
+    // SPDX-SnippetBegin
+    // SPDX-SnippetCopyrightText: Copyright (c) 2021-2024 The rp-rs Developers
+    // SPDX-License-Identifier: MIT OR Apache-2.0
+    /// rp235x-hal's `Spi::set_baudrate` (spi.rs), on this block's registers.
+    fn set_baudrate(&mut self, baudrate: u32) -> u32 {
+        let freq_in = self.peri_hz;
+        let mut prescale: u8 = u8::MAX;
+        let mut postdiv: u8 = 0;
+
+        // Find smallest prescale value which puts output frequency in range of
+        // post-divide. Prescale is an even number from 2 to 254 inclusive.
+        for prescale_option in (2u32..=254).step_by(2) {
+            // We need to use an saturating_mul here because with a high baudrate certain invalid prescale
+            // values might not fit in u32. However we can be sure those values exceed the max sys_clk frequency
+            // So clamping a u32::MAX is fine here...
+            if freq_in < ((prescale_option + 2) * 256).saturating_mul(baudrate) {
+                prescale = prescale_option as u8;
+                break;
+            }
+        }
+
+        // Find largest post-divide which makes output <= baudrate. Post-divide is
+        // an integer in the range 0 to 255 inclusive.
+        for postdiv_option in (1..=255u8).rev() {
+            if freq_in / (prescale as u32 * postdiv_option as u32) > baudrate {
+                postdiv = postdiv_option;
+                break;
+            }
+        }
+
+        wr(self.base + SSPCPSR, u32::from(prescale));
+        wr(self.base + SSPCR0, (rd(self.base + SSPCR0) & !(0xff << CR0_SCR_LSB)) | u32::from(postdiv) << CR0_SCR_LSB);
+
+        // Return the frequency we were able to achieve
+        freq_in / (prescale as u32 * (1 + postdiv as u32))
+    }
+    // SPDX-SnippetEnd
 
     #[inline(always)]
     fn run(n: usize, mut tx: impl FnMut(usize) -> u8, mut rx: impl FnMut(usize, u8)) {
-        // SAFETY: SPI1's data and status registers; SPI1 is ours.
+        // SAFETY: the block's data and status registers; the block is ours,
+        // and the pointers were set before core 1 started.
         unsafe {
-            while SSPSR.read_volatile() & SR_RNE != 0 {
-                let _ = SSPDR.read_volatile();
+            let (dr, sr_reg) = (SSPDR, SSPSR);
+            while sr_reg.read_volatile() & SR_RNE != 0 {
+                let _ = dr.read_volatile();
             }
             let (mut sent, mut got) = (0, 0);
             while got < n {
-                let sr = SSPSR.read_volatile();
+                let sr = sr_reg.read_volatile();
                 if sent < n && sent - got < FIFO && sr & SR_TNF != 0 {
-                    SSPDR.write_volatile(u32::from(tx(sent)));
+                    dr.write_volatile(u32::from(tx(sent)));
                     sent += 1;
                 }
                 if sr & SR_RNE != 0 {
-                    rx(got, SSPDR.read_volatile() as u8);
+                    rx(got, dr.read_volatile() as u8);
                     got += 1;
                 }
             }
-            while SSPSR.read_volatile() & SR_BSY != 0 {}
+            while sr_reg.read_volatile() & SR_BSY != 0 {}
         }
     }
 }
@@ -99,10 +177,10 @@ impl BoardSd {
 
 impl sdcard::SdBus for BoardSd {
     fn set_hz(&mut self, hz: u32) {
-        self.actual_hz = self.spi.set_baudrate(self.peri_hz.Hz(), hz.Hz()).to_Hz();
+        self.actual_hz = self.set_baudrate(hz);
     }
     fn select(&mut self, on: bool) {
-        let _ = if on { self.cs.set_low() } else { self.cs.set_high() };
+        pins::set(self.cs, !on);
     }
     fn transfer(&mut self, buf: &mut [u8]) {
         let p = buf.as_mut_ptr();
@@ -304,7 +382,7 @@ impl SdService {
         for (i, s) in segs.iter_mut().enumerate().take(nseg) {
             let a = rd(BLK_SEGS + 8 * i);
             let l = rd(BLK_SEGS + 8 * i + 4);
-            if a < RAM_START || l == 0 || l % 512 != 0 || a.checked_add(l).is_none_or(|e| e > RAM_END) {
+            if a < RAM_START || l == 0 || !l.is_multiple_of(512) || a.checked_add(l).is_none_or(|e| e > RAM_END) {
                 self.bad_requests += 1;
                 return false;
             }

@@ -42,18 +42,20 @@ and brought back elsewhere in memory.
 
 ## Hardware
 
-- **An RP2350B** (the 48-GPIO package), at 348 MHz (1.20 V).
-- **8 MiB of PSRAM** (APS6404L) on QMI CS1, GP0.
+- **An RP2350A or RP2350B**, at 150 to 348 MHz (set in setup).
+- **8 MiB of PSRAM** (APS6404L) on QMI CS1: GP0, GP8, GP19 or GP47.
 - **16 MiB of flash**: the flash map below reaches 0x10FFFFFF.
-- **A CYW43439 Wi-Fi module** (RM2) wired as on the Pico 2 W: WL_ON GP23,
-  data/IRQ GP24, CS GP25, clock GP29, run from PIO0.
-- **A micro SD card** on SPI1: GP8 MISO, GP9 CS, GP10 SCK, GP11 MOSI. Its
-  first partition is FAT; a second partition with a Linux swap signature
-  becomes swap.
+- **A CYW43439 Wi-Fi module** (RM2), run from PIO0; by default wired as on
+  the Pico 2 W: WL_ON GP23, data/IRQ GP24, CS GP25, clock GP29.
+- **A micro SD card** on SPI0 or SPI1; by default SPI1 on GP8 MISO, GP9
+  CS, GP10 SCK, GP11 MOSI. Its first partition is FAT; a second partition
+  with a Linux swap signature becomes swap.
 - **USB** to a host, for the console and loading.
 
-GP0, GP8–GP11, GP23–GP25, GP29, PIO0 and SPI1 belong to core 1. The other
-pins are Linux's ([pins/README.md](pins/README.md)).
+Which pins these are is the board config, set in the boot stub's setup
+screen ([docs/boot-and-io.md](docs/boot-and-io.md), "Setup and the board
+config"). Those pins, PIO0 and the SD card's SPI block belong to core 1;
+the other pins are Linux's ([pins/README.md](pins/README.md)).
 
 ## Building from scratch
 
@@ -131,7 +133,7 @@ probe (probe-rs, `PROBE_RS=path`). The first time, hold BOOTSEL while
 plugging the board in. The root filesystem and the xip romfs are written
 only when they differ from what the board holds (`picotool verify`).
 
-It never writes `/home` or the Wi-Fi settings sector.
+It never writes `/home` or the board config sector.
 `STUB_CARGO_FLAGS=--no-default-features ./load.sh` builds the stub with all
 of core 1's code in flash instead of SRAM.
 
@@ -143,7 +145,7 @@ of core 1's code in flash instead of SRAM.
 | 0x10100000 | `/home`: jffs2, 1 MiB (mtd3). Kept across reboots; never formatted or erased by `load.sh` or at boot |
 | 0x10200000 | xip romfs, at most 2016 KiB (mtd2): shared libraries and large read-only files, run in place and bound over the root filesystem at boot |
 | 0x103F8000 | Device tree |
-| 0x103FF000 | Wi-Fi settings sector (written by `tools/wifi.sh`; read-only to Linux) |
+| 0x103FF000 | Board config (written only by the boot stub's setup screen; read-only to Linux) |
 | 0x10400000 | Root filesystem: squashfs, at most 0x980000 bytes (mtd1) |
 | 0x10D80000 | `xipImage`: kernel text and compressed data, at most 0x270000 bytes |
 | 0x10FF0000 | Scratch, 64 KiB (mtd4): free to erase, for tests |
@@ -156,16 +158,16 @@ of core 1's code in flash instead of SRAM.
 screen /dev/cu.usbmodemnative1 115200    # log in as root, no password
 ```
 
-**Wi-Fi.** On the host, store the network the board joins (it asks for the
-passphrase; the board restarts afterwards):
+**Setup.** The boot stub has a setup screen on the console, where the
+board config is set: the CPU speed, the PSRAM's chip select, the SD
+card's and the Wi-Fi radio's pins, and the Wi-Fi network. A board with no
+config starts in it; otherwise the stub counts down 10 seconds at each boot
+(press a key for setup), or `reboot config` on the board opens it at the
+next boot ([docs/boot-and-io.md](docs/boot-and-io.md)).
 
-```sh
-tools/wifi.sh SSID        # an empty passphrase means an open network
-tools/wifi.sh --forget    # erase the stored network
-```
-
-The board then joins at every boot, rejoins when the link drops, and takes
-an address by DHCP. `ip addr show eth0` on the console shows it.
+**Wi-Fi.** Set the network in setup. The board then joins at every boot,
+rejoins when the link drops, and takes an address by DHCP. `ip addr show
+eth0` on the console shows it.
 
 **/home.** `/root` is `/home/root`, on flash. On a board whose `/home`
 region doesn't hold jffs2 yet, `/home` is in RAM and nothing is formatted
@@ -268,7 +270,7 @@ On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
 | `claude-remote/` | `claude-remote` and `claude-guest-mcp`, an MCP tool server built as an ATRANS program |
 | `tests/` | Kernel tests (`forktest`, `forktest3`, `swaptest`), the FDPIC switch baseline `pingpong`, `sramload`, `watchd`, and the ATRANS linker scripts |
 | `docker/` | The image the Buildroot builds run in (`rp2350-native-build`) |
-| `tools/` | `wifi.sh`, `preflight.sh` (sourced by the scripts), board session tools (`board-lock.sh`, `boot-wait.py`, `serial-chat.py`, `board-cmd.py`), `hot-text.py` (which kernel code goes in SRAM, from `/proc/pcsample` profiles), and the two-board pin harness (`pin-test.py`, `pintester/`) |
+| `tools/` | `preflight.sh` (sourced by the scripts), board session tools (`board-lock.sh`, `boot-wait.py`, `serial-chat.py`, `board-cmd.py`), `hot-text.py` (which kernel code goes in SRAM, from `/proc/pcsample` profiles), and the two-board pin harness (`pin-test.py`, `pintester/`) |
 | `docs/` | Design notes and measurements (below) |
 
 ## Documentation

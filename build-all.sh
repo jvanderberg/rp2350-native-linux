@@ -13,7 +13,7 @@
 #      -> out/rootfs.squashfs, out/xip.romfs, out/xipImage, out/rp2350.dtb
 #   6. the boot stub -> boot/target/thumbv8m.main-none-eabihf/release/nativeboot
 # Each step is incremental: running it again rebuilds what changed.
-# Then: ./load.sh (it never formats /home or touches the Wi-Fi settings).
+# Then: ./load.sh (it never formats /home or touches the board config).
 set -euo pipefail
 cd "$(dirname "$0")"
 step() { printf '\n==== build-all: %s\n' "$*"; }

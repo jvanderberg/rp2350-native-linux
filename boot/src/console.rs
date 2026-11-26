@@ -54,6 +54,41 @@ pub fn ring_print(s: &str) {
         ring_putc(b);
     }
 }
+/// Core 0, before Linux (the setup screen): bytes as they are.
+pub fn ring_write(s: &[u8]) {
+    for &b in s {
+        ring_putc(b);
+    }
+}
+
+/// Core 0, before Linux: the next byte typed on the terminal, if any.
+pub fn ring_getc() -> Option<u8> {
+    let head = rd(IN_HEAD);
+    if head == rd(IN_TAIL) {
+        return None;
+    }
+    fence(Ordering::Acquire);
+    // SAFETY: SRAM8, inside the in ring.
+    let b = unsafe { read_volatile((IN_BUF + (head & (IN_SIZE - 1)) as usize) as *const u8) };
+    wr(IN_HEAD, head.wrapping_add(1));
+    Some(b)
+}
+
+/// Core 0, before Linux: forget what was typed, so Linux doesn't get it.
+pub fn ring_drain_input() {
+    wr(IN_HEAD, rd(IN_TAIL));
+}
+
+/// Whether a terminal has the port open (DTR, as `Console::poll` last saw it).
+pub fn terminal_open() -> bool {
+    rd(FLAGS) & 1 != 0
+}
+
+/// Whether everything written has gone to the host (or been dropped).
+pub fn out_empty() -> bool {
+    rd(OUT_HEAD) == rd(OUT_TAIL)
+}
+
 fn ring_putc(b: u8) {
     let tail = rd(OUT_TAIL);
     if tail.wrapping_sub(rd(OUT_HEAD)) >= OUT_SIZE {

@@ -11,7 +11,7 @@
 #   from flash, mkxiprom.py; at most 0x1F8000 bytes, up to the DTB), only
 #   when it differs from what the board holds.
 # usage: load.sh [--stub-only]
-# Never written: the Wi-Fi settings sector (0x103FF000) and /home
+# Never written: the board config sector (0x103FF000) and /home
 # (0x10100000-0x101FFFFF, the user's jffs2).
 # 0x10200000-0x103F7FFF holds the xip romfs.
 set -euo pipefail

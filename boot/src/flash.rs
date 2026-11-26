@@ -10,8 +10,8 @@
 //!   caller's stack is in PSRAM;
 //! - refuses anything outside `REGIONS` (constants here, not in shared
 //!   memory): the /home region, 0x10100000-0x101FFFFF, and a 64 KiB scratch
-//!   region at 0x10FF0000 for tests. Never the stub, the kernel, the Wi-Fi
-//!   sector or the root filesystem. `FL_START`/`FL_END` show the /home one;
+//!   region at 0x10FF0000 for tests. Never the stub, the kernel, the board
+//!   config sector or the root filesystem. `FL_START`/`FL_END` show the /home one;
 //! - parks core 1 in an SRAM loop (`io::serve_park`, rung awake with
 //!   `BELL1_PARK`), giving up after a second;
 //! - saves the QMI window settings (the board's flash timing, the PSRAM's
@@ -29,9 +29,14 @@
 //! `nb_flash_entry(op, addr, 0)`: op 1 erases the sector at `addr`, op 2
 //! programs the page at `addr` (XIP addresses). Returns 0, -EINVAL (-22)
 //! for a bad range, or -EBUSY (-16) if core 1 did not park.
+//!
+//! The stub writes the board config sector (`config`) through the same
+//! routine, with `write_config`, from core 0 before core 1 starts: only
+//! then is that sector open (`CONFIG_OPEN`), and with no core 1 there is
+//! nothing to park.
 
 use core::ptr::{read_volatile, write_volatile};
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::io::{self, FL_END, FL_PAGE_BUF, FL_START, FL_STACK_TOP, PARK_ACK, PARK_REQ};
 use rp235x_hal::rom_data;
@@ -43,6 +48,12 @@ pub const REGION_END: u32 = 0x1020_0000;
 pub const SCRATCH_START: u32 = 0x10ff_0000;
 pub const SCRATCH_END: u32 = 0x1100_0000;
 const SECTOR: u32 = 4096;
+/// The board config sector, writable only by the stub (`write_config`).
+const CONFIG_SECTOR: u32 = crate::config::ADDR;
+/// Set while core 0 writes the config, before core 1 runs.
+static CONFIG_OPEN: AtomicBool = AtomicBool::new(false);
+/// Set once core 1 runs its loop (and can be parked).
+pub static CORE1_UP: AtomicBool = AtomicBool::new(false);
 const PAGE: u32 = 256;
 const XIP_BASE: u32 = 0x1000_0000;
 const XIP_NOCACHE_NOALLOC: u32 = 0x1400_0000;
@@ -158,8 +169,10 @@ extern "C" fn nb_flash_body(op: u32, addr: u32, _len: u32) -> i32 {
     let size = if op == OP_ERASE { SECTOR } else { PAGE };
     let inside = |start: u32, end: u32| addr >= start && addr < end && end - addr >= size;
     if (op != OP_ERASE && op != OP_PROGRAM)
-        || addr % size != 0
-        || !(inside(REGION_START, REGION_END) || inside(SCRATCH_START, SCRATCH_END))
+        || !addr.is_multiple_of(size)
+        || !(inside(REGION_START, REGION_END)
+            || inside(SCRATCH_START, SCRATCH_END)
+            || CONFIG_OPEN.load(Ordering::SeqCst) && inside(CONFIG_SECTOR, CONFIG_SECTOR + SECTOR))
     {
         return -22;
     }
@@ -172,14 +185,17 @@ extern "C" fn nb_flash_body(op: u32, addr: u32, _len: u32) -> i32 {
     if op == OP_ERASE && blank(addr, SECTOR) {
         return 0;
     }
-    // core 1 into its SRAM loop
-    PARK_REQ.store(true, Ordering::SeqCst);
-    wr(0xd000_0180, crate::io::BELL1_PARK); // SIO DOORBELL_OUT_SET
-    let t0 = rd(TIMERAWL);
-    while !PARK_ACK.load(Ordering::SeqCst) {
-        if rd(TIMERAWL).wrapping_sub(t0) > PARK_TIMEOUT_US {
-            PARK_REQ.store(false, Ordering::SeqCst);
-            return -16;
+    // core 1 into its SRAM loop (if it runs yet)
+    let park = CORE1_UP.load(Ordering::SeqCst);
+    if park {
+        PARK_REQ.store(true, Ordering::SeqCst);
+        wr(0xd000_0180, crate::io::BELL1_PARK); // SIO DOORBELL_OUT_SET
+        let t0 = rd(TIMERAWL);
+        while !PARK_ACK.load(Ordering::SeqCst) {
+            if rd(TIMERAWL).wrapping_sub(t0) > PARK_TIMEOUT_US {
+                PARK_REQ.store(false, Ordering::SeqCst);
+                return -16;
+            }
         }
     }
     let t1 = rd(TIMERAWL);
@@ -245,8 +261,12 @@ extern "C" fn nb_flash_body(op: u32, addr: u32, _len: u32) -> i32 {
     cortex_m::asm::isb();
     let dt = rd(TIMERAWL).wrapping_sub(t1);
 
-    PARK_REQ.store(false, Ordering::SeqCst);
-    while PARK_ACK.load(Ordering::SeqCst) {}
+    if park {
+        PARK_REQ.store(false, Ordering::SeqCst);
+        while PARK_ACK.load(Ordering::SeqCst) {
+            core::hint::spin_loop();
+        }
+    }
 
     use crate::io::{FL_ERASES, FL_PAGES, FL_STALL_MAX_US, FL_STALL_TOTAL_MS};
     let count = if op == OP_ERASE { FL_ERASES } else { FL_PAGES } as u32;
@@ -260,4 +280,40 @@ extern "C" fn nb_flash_body(op: u32, addr: u32, _len: u32) -> i32 {
     wr(FL_STALL_TOTAL_MS as u32, rd(FL_STALL_TOTAL_MS as u32) + us / 1000);
     wr(rest, us % 1000);
     0
+}
+
+/// Core 0, before core 1 starts: erase the config sector and program it
+/// with `image`, page by page through the I/O area's page buffer. Returns
+/// the routine's error, if any.
+/// Erases the config sector and writes `image` at its start; the rest of
+/// the sector stays erased.
+pub fn write_config(image: &[u8; crate::config::LEN]) -> Result<(), i32> {
+    if CORE1_UP.load(Ordering::SeqCst) {
+        return Err(-16);
+    }
+    CONFIG_OPEN.store(true, Ordering::SeqCst);
+    let r = (|| {
+        // SAFETY: the routine, with interrupts masked inside; a sector address.
+        let e = unsafe { nb_flash_entry(OP_ERASE, CONFIG_SECTOR, 0) };
+        if e != 0 {
+            return Err(e);
+        }
+        for (i, page) in image.chunks(PAGE as usize).enumerate() {
+            if page.iter().all(|&b| b == 0xff) {
+                continue;
+            }
+            for (j, &b) in page.iter().enumerate() {
+                // SAFETY: the I/O area's page buffer, 256 bytes.
+                unsafe { write_volatile((FL_PAGE_BUF + j) as *mut u8, b) };
+            }
+            // SAFETY: as above; a page address.
+            let e = unsafe { nb_flash_entry(OP_PROGRAM, CONFIG_SECTOR + i as u32 * PAGE, 0) };
+            if e != 0 {
+                return Err(e);
+            }
+        }
+        Ok(())
+    })();
+    CONFIG_OPEN.store(false, Ordering::SeqCst);
+    r
 }
