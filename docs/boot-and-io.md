@@ -57,7 +57,10 @@ covered by the CRC.
 starts in setup and waits for a terminal); after two boots in a row that
 didn't reach Linux's init; when Linux asked for it (`reboot config`); when
 no PSRAM answers; and on any key during the countdown. Otherwise the stub
-waits the countdown, then boots.
+waits the countdown, then boots. A sector `tools/wifi.sh` wrote (older
+images: a network only) isn't a config, but it boots the defaults with that
+network, as before, so a board without a terminal keeps booting; save in
+setup to replace it.
 
 **The screen.** Up and down choose a line, and left and right change its
 value. Enter on CPU speed, PSRAM chip select or SD card pins opens a list
@@ -65,20 +68,26 @@ of the choices (up and down, Enter to take one; a choice whose pins
 something else uses says so). On the Wi-Fi lines and the countdown, Enter
 types a value. On an action, it runs it. Esc cancels, and Ctrl-L draws the
 screen again. The actions find the PSRAM, test the SD
-card (it reports the card's size) and the radio (it powers the chip and
-reads its bus test word, 0xFEEDBEAD), save and boot, boot the saved config
-without saving, and restore the defaults. Saving checks the config first:
+card (it reports the card's size; pins the radio or the PSRAM has are
+refused) and the radio (it powers the chip and reads its bus test word,
+0xFEEDBEAD), save and boot, boot the saved settings (dropping what was
+changed on the screen), and restore the defaults. Saving checks the config first:
 no pin used twice, the SD pins on one SPI block, a passphrase of 8 to 63
 characters. A new CPU speed takes a reboot, which skips the countdown.
 
 **Failed boots.** POWMAN's scratch registers survive the watchdog's chip
-resets (`boot/src/boot.rs`). The stub counts each boot it starts; Linux
+resets (`boot/src/boot.rs`). The stub counts each boot as it starts; Linux
 zeroes the count when `/sbin/overlay-init` writes `/proc/rp2350/boot_ok`.
-Before it starts Linux the stub starts the watchdog at its longest, about
-16.7 s, if the device tree has `/chosen/rp2350,boot-watchdog`, and
-`linux/mach-rp2350/board.c` feeds it once a second until `boot_ok`, then
-stops it. A kernel that hangs or panics on the way resets the board and
-counts as a failed boot; at two, setup opens.
+The watchdog, at its longest (about 16.7 s), runs from the stub's start,
+fed while the countdown and setup wait, so a CPU speed that hangs the stub
+itself resets the board too. Before it starts Linux the stub starts the
+watchdog again if the device tree has `/chosen/rp2350,boot-watchdog` (and
+stops it if not), and `linux/mach-rp2350/board.c` feeds it once a second
+until `boot_ok`, then stops it. The kernel feeds it for two minutes at
+most, so a boot that hangs or panics, or never gets to `boot_ok`, resets
+the board and counts as a failed boot. At two, setup opens, with the clocks
+at the stock 150 MHz in case the saved speed is what fails; saving (or
+booting the saved settings) goes back to the saved speed.
 
 **`reboot config`.** `/sbin/reboot` is a script that writes `config` to
 `/proc/rp2350/next_boot` before it runs BusyBox's reboot; the next boot
@@ -106,7 +115,7 @@ The boot banner lists what was turned off.
 | 348 MHz | 1.20 V | 116 MHz |
 
 The flash and the PSRAM run at clk_sys over the smallest divider that
-gives at most 116 MHz; the flash's read delay is about 5.7 ns at each
+gives at most 116 MHz; the flash's read delay is at least 5.7 ns at each
 speed (`board.rs`). Each setting was tested on the board, set and saved
 through the setup screen: Linux booted to login with the SD card, swap
 and Wi-Fi up, and:

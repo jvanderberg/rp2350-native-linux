@@ -11,6 +11,7 @@
 //! - the GPIO controller's `gpio-reserved-ranges` and `gpio-line-names`:
 //!   core 1's pins, the fixed pins of the Linux peripherals that stay on,
 //!   and on an RP2350A the pins it doesn't have;
+//! - on an RP2350A, the chip in the root's `model`;
 //! - `status = "disabled"` on a Linux peripheral whose pins (or SPI block)
 //!   core 1 has (`LINUX_PERIPHERALS`), and on the ADC of an RP2350A, whose
 //!   ADC is on other pins.
@@ -124,8 +125,15 @@ fn plan(c: &Config, psram_cs: u8) -> (u8, PinPlan) {
     (disabled, pp)
 }
 
-fn be(b: &[u8], at: usize) -> u32 {
-    u32::from_be_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
+/// The big-endian word at `at`, if `b` has it.
+fn be(b: &[u8], at: usize) -> Option<u32> {
+    let w = sub(b, at, 4)?;
+    Some(u32::from_be_bytes([w[0], w[1], w[2], w[3]]))
+}
+
+/// `len` bytes of `b` from `at`, if `b` has them.
+fn sub(b: &[u8], at: usize, len: usize) -> Option<&[u8]> {
+    b.get(at..at.checked_add(len)?)
 }
 
 /// Copies the tree at `dtb` with the config applied (see the module docs)
@@ -161,24 +169,29 @@ pub fn patch(dtb: u32, c: &Config, psram_cs: u8, ram: u32, sys_hz: u32) -> Patch
 /// `src` isn't a tree this understands or `out` is too small.
 pub fn build(src: &[u8], out: &mut [u8], c: &Config, psram_cs: u8, mem_size: u32, sys_hz: u32) -> Option<(bool, u8)> {
     let (disabled, pp) = plan(c, psram_cs);
-    if src.len() < HEADER || be(src, 0) != FDT_MAGIC {
+    // every offset and size is checked: a bad tree is None (the stub then
+    // passes the one in flash as it is), never a panic
+    if be(src, 0)? != FDT_MAGIC {
         return None;
     }
-    let (off_struct, off_strings, off_rsv) = (be(src, 8) as usize, be(src, 12) as usize, be(src, 16) as usize);
-    let (size_strings, size_struct) = (be(src, 32) as usize, be(src, 36) as usize);
-    let strings = &src[off_strings..off_strings + size_strings];
+    let field = |at: usize| be(src, at).map(|v| v as usize);
+    let (off_struct, off_strings, off_rsv) = (field(8)?, field(12)?, field(16)?);
+    let (size_strings, size_struct) = (field(32)?, field(36)?);
+    let header = sub(src, 0, HEADER)?;
+    let strings = sub(src, off_strings, size_strings)?;
+    sub(src, off_struct, size_struct)?;
     let name_at = |off: usize| -> &[u8] {
-        let s = &strings[off..];
+        let s = strings.get(off..).unwrap_or(b"");
         &s[..s.iter().position(|&b| b == 0).unwrap_or(s.len())]
     };
 
     let mut w = Writer { buf: out, len: 0, ok: true };
-    w.bytes(&src[..HEADER]);
+    w.bytes(header);
     // the memory reservation block, up to and including its terminator
     let rsv_out = w.len;
     let mut r = off_rsv;
     loop {
-        let e = &src[r..r + 16];
+        let e = sub(src, r, 16)?;
         w.bytes(e);
         r += 16;
         if e.iter().all(|&b| b == 0) {
@@ -192,13 +205,13 @@ pub fn build(src: &[u8], out: &mut [u8], c: &Config, psram_cs: u8, mem_size: u32
     let mut i = off_struct;
     let end = off_struct + size_struct;
     while i < end {
-        let tok = be(src, i);
+        let tok = be(src, i)?;
         match tok {
             FDT_BEGIN_NODE => {
-                let s = &src[i + 4..];
-                let n = s.iter().position(|&b| b == 0).unwrap_or(0);
+                let s = src.get(i + 4..end)?;
+                let n = s.iter().position(|&b| b == 0)?;
                 let len = 4 + (n + 1).next_multiple_of(4);
-                w.bytes(&src[i..i + len]);
+                w.bytes(sub(src, i, len)?);
                 if depth < stack.len() {
                     stack[depth] = &s[..n];
                 }
@@ -206,14 +219,14 @@ pub fn build(src: &[u8], out: &mut [u8], c: &Config, psram_cs: u8, mem_size: u32
                 i += len;
             }
             FDT_END_NODE => {
-                w.bytes(&src[i..i + 4]);
+                w.bytes(sub(src, i, 4)?);
                 depth = depth.saturating_sub(1);
                 i += 4;
             }
             FDT_PROP => {
-                let vlen = be(src, i + 4) as usize;
-                let nameoff = be(src, i + 8);
-                let value = &src[i + 12..i + 12 + vlen];
+                let vlen = be(src, i + 4)? as usize;
+                let nameoff = be(src, i + 8)?;
+                let value = sub(src, i + 12, vlen)?;
                 let node = if depth > 0 && depth <= stack.len() { stack[depth - 1] } else { b"" };
                 let name = name_at(nameoff as usize);
                 if node == b"chosen" && name == b"rp2350,boot-watchdog" {
@@ -256,6 +269,11 @@ pub fn build(src: &[u8], out: &mut [u8], c: &Config, psram_cs: u8, mem_size: u32
                             w.bytes(name.as_bytes());
                             w.bytes(&[0]);
                         }
+                    }),
+                    // the model names the chip (an RP2350B in the source)
+                    (b"", b"model") if pins::count() == 30 && value.starts_with(b"RP2350B") => prop(&mut |w| {
+                        w.bytes(b"RP2350A");
+                        w.bytes(&value[7..]);
                     }),
                     (n, b"status")
                         if LINUX_PERIPHERALS.iter().enumerate().any(|(k, p)| disabled & 1 << k != 0 && p.node.as_bytes() == n) =>

@@ -138,6 +138,8 @@ struct State {
     pick: Option<Pick>,
     status: Line,
     dtr: bool,
+    /// The last byte was a CR (a terminal may send CR LF for Enter).
+    cr: bool,
 }
 
 fn status(st: &mut State, args: core::fmt::Arguments) {
@@ -148,8 +150,14 @@ fn status(st: &mut State, args: core::fmt::Arguments) {
 fn wait_us(hw: &mut Hw, us: u64) {
     let t0 = io::now_us();
     while io::now_us() - t0 < us {
-        hw.con.poll();
+        poll(hw.con);
     }
+}
+
+/// The console, and the watchdog the stub runs (boot.rs) while it waits.
+fn poll(con: &mut Console) {
+    con.poll();
+    boot::watchdog_feed();
 }
 
 /// The boot's countdown: true if a key came. The console is polled all
@@ -159,7 +167,7 @@ pub fn countdown(con: &mut Console, secs: u8) -> bool {
     let t0 = io::now_us();
     let mut shown = u32::MAX;
     loop {
-        con.poll();
+        poll(con);
         if console::ring_getc().is_some() {
             console::ring_drain_input();
             console::ring_print("\n");
@@ -182,7 +190,7 @@ pub fn countdown(con: &mut Console, secs: u8) -> bool {
 
 fn read_key(hw: &mut Hw, st: &mut State) -> Key {
     loop {
-        hw.con.poll();
+        poll(hw.con);
         let dtr = console::terminal_open();
         if dtr != st.dtr {
             st.dtr = dtr;
@@ -191,6 +199,7 @@ fn read_key(hw: &mut Hw, st: &mut State) -> Key {
             }
         }
         let Some(b) = console::ring_getc() else { continue };
+        let after_cr = core::mem::replace(&mut st.cr, b == b'\r');
         return match b {
             0x1b => {
                 // an escape sequence, or Esc on its own
@@ -198,7 +207,7 @@ fn read_key(hw: &mut Hw, st: &mut State) -> Key {
                 let mut seq = [0u8; 4];
                 let mut n = 0;
                 while io::now_us() - t0 < 30_000 && n < seq.len() {
-                    hw.con.poll();
+                    poll(hw.con);
                     if let Some(c) = console::ring_getc() {
                         seq[n] = c;
                         n += 1;
@@ -216,6 +225,7 @@ fn read_key(hw: &mut Hw, st: &mut State) -> Key {
                     _ => continue,
                 }
             }
+            b'\n' if after_cr => continue,
             b'\r' | b'\n' => Key::Enter,
             0x7f | 0x08 => Key::Back,
             0x0c => Key::Redraw,
@@ -283,7 +293,7 @@ fn value(st: &State, row: Row, l: &mut Line) {
         Row::Countdown => {
             let _ = write!(l, "{} s", c.countdown);
             if c.countdown == 0 {
-                let _ = write!(l, " (Esc on the terminal can't stop the boot; use 'reboot config')");
+                let _ = write!(l, " (no countdown: 'reboot config' opens setup)");
             }
         }
         _ => {}
@@ -401,7 +411,7 @@ fn label(row: Row) -> &'static str {
         Row::TestSd => "Test the SD card",
         Row::TestRadio => "Test the Wi-Fi radio",
         Row::SaveBoot => "Save and boot",
-        Row::BootSaved => "Boot without saving",
+        Row::BootSaved => "Boot the saved settings",
         Row::Defaults => "Restore the defaults",
     }
 }
@@ -501,11 +511,15 @@ fn draw_row(st: &State, i: usize) {
     let mut v = Line::new();
     match editing {
         Some(e) => {
-            let _ = v.write_str(core::str::from_utf8(&e.buf[..e.len]).unwrap_or(""));
+            // the end of what is typed, if it is longer than the line
+            let from = (e.len + 1).saturating_sub(width);
+            let _ = v.write_str(core::str::from_utf8(&e.buf[from..e.len]).unwrap_or(""));
             let _ = v.write_str("_");
         }
         None => value(st, row, &mut v),
     }
+    // never past the line's end (a long network name or passphrase)
+    v.len = v.len.min(width);
     while v.len < width {
         let _ = v.write_str(" ");
     }
@@ -525,7 +539,7 @@ fn draw_status(st: &State) {
     console::ring_write(BODY);
     console::ring_write(b"\x1b[K  ");
     console::ring_write(NOTE);
-    console::ring_write(st.status.as_bytes());
+    console::ring_write(&st.status.as_bytes()[..st.status.len.min(78)]);
     console::ring_write(BODY);
 }
 
@@ -579,7 +593,7 @@ impl core::fmt::Display for Line {
 fn flush(hw: &mut Hw) {
     let t0 = io::now_us();
     while !console::out_empty() && console::terminal_open() && io::now_us() - t0 < 200_000 {
-        hw.con.poll();
+        poll(hw.con);
     }
 }
 
@@ -674,15 +688,18 @@ fn finish_edit(st: &mut State) {
     status(st, format_args!(""));
 }
 
-/// The SD card's pins on their own (what `Config::check` says about them).
-fn sd_pins_ok(c: &Config) -> Result<(), &'static str> {
-    let mut only = *c;
-    only.wifi = [u8::MAX; 4];
-    only.psram_cs = CS_AUTO;
-    match only.check() {
-        Err("a pin this chip doesn't have") if c.sd.iter().all(|&p| pins::exists(p)) => Ok(()),
-        r => r,
+/// Whether the SD card's pins can be tried: valid on their own, and none
+/// the radio or the PSRAM has.
+fn sd_pins_ok(st: &mut State) -> bool {
+    if let Err(e) = st.cfg.check_sd() {
+        status(st, format_args!("{}.", e));
+        return false;
     }
+    if let Some((p, u)) = st.cfg.sd.iter().find_map(|&p| pin_user(&st.cfg, p, Row::Sd).map(|u| (p, u))) {
+        status(st, format_args!("GP{} is in use: {}.", p, u));
+        return false;
+    }
+    true
 }
 
 fn action(hw: &mut Hw, st: &mut State, row: Row) -> Option<Config> {
@@ -706,8 +723,7 @@ fn action(hw: &mut Hw, st: &mut State, row: Row) -> Option<Config> {
             }
         }
         Row::TestSd => {
-            if let Err(e) = sd_pins_ok(&st.cfg) {
-                status(st, format_args!("{}", e));
+            if !sd_pins_ok(st) {
                 return None;
             }
             status(st, format_args!("Talking to the SD card..."));
@@ -782,14 +798,28 @@ fn action(hw: &mut Hw, st: &mut State, row: Row) -> Option<Config> {
 /// Run the screen until the user boots. Returns the config to boot with if
 /// the clocks already run at its CPU speed; otherwise reboots into it.
 #[inline(never)]
-pub fn run(hw: &mut Hw, cfg: Config, saved: Option<Config>, why: Why) -> Config {
-    boot::set_failed_boots(0);
-    let mut st = State { cfg, saved, sel: 0, edit: None, pick: None, status: Line::new(), dtr: console::terminal_open() };
+pub fn run(hw: &mut Hw, cfg: Config, saved: &mut Option<Config>, why: Why) -> Config {
+    // someone is here: the boots before are forgiven, this one counts
+    boot::set_failed_boots(1);
+    let mut st = State {
+        cfg,
+        saved: *saved,
+        sel: 0,
+        edit: None,
+        pick: None,
+        status: Line::new(),
+        dtr: console::terminal_open(),
+        cr: false,
+    };
     match why {
         Why::Empty => status(&mut st, format_args!("No board config yet: check each line, then Save and boot.")),
         Why::Legacy => status(&mut st, format_args!("No board config yet; the network is the one wifi.sh stored. Check, then save.")),
         Why::Invalid => status(&mut st, format_args!("The board config in flash isn't valid: check it, then save.")),
-        Why::FailedBoots(n) => status(&mut st, format_args!("Linux didn't finish booting {} times in a row: check the settings.", n)),
+        Why::FailedBoots(n) if hw.cpu != st.cfg.cpu => status(
+            &mut st,
+            format_args!("{} failed boots in a row: running at {} MHz. Check the settings.", n, CPU_PRESETS[0].mhz),
+        ),
+        Why::FailedBoots(n) => status(&mut st, format_args!("{} boots in a row didn't reach Linux's init: check the settings.", n)),
         Why::Requested => status(&mut st, format_args!("Opened by 'reboot config'.")),
         Why::Key => {}
         Why::NoPsram => status(&mut st, format_args!("No PSRAM answered: Linux needs it. Check its chip select.")),
@@ -880,6 +910,7 @@ pub fn run(hw: &mut Hw, cfg: Config, saved: Option<Config>, why: Why) -> Config 
         draw_row(&st, st.sel);
         draw_status(&st);
     };
+    *saved = st.saved;
     console::ring_write(b"\x1b[0m\x1b[2J\x1b[H\x1b[?25h");
     flush(hw);
     console::ring_drain_input();

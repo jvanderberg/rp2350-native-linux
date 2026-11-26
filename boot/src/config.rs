@@ -198,13 +198,7 @@ impl Config {
                 return Err("a pin is used twice");
             }
         }
-        let [miso, _, sck, mosi] = self.sd;
-        if pins::spi_role(miso) != SpiRole::Rx || pins::spi_role(sck) != SpiRole::Sck || pins::spi_role(mosi) != SpiRole::Tx {
-            return Err("SD MISO, SCK, MOSI must be SPI RX, SCK, TX pins");
-        }
-        if pins::spi_block(miso) != pins::spi_block(sck) || pins::spi_block(mosi) != pins::spi_block(sck) {
-            return Err("SD MISO, SCK and MOSI must be on the same SPI");
-        }
+        self.check_sd()?;
         let (dio, clk) = (self.wifi[WL_DIO], self.wifi[WL_CLK]);
         if !(dio < 32 && clk < 32 || dio >= 16 && clk >= 16) {
             return Err("Wi-Fi DIO and CLK must both be in GP0-31 or in GP16-47");
@@ -214,6 +208,25 @@ impl Config {
         }
         if self.pass_len != 0 && !(8..=63).contains(&self.pass_len) {
             return Err("a WPA passphrase is 8 to 63 characters");
+        }
+        Ok(())
+    }
+
+    /// The SD card's pins on their own: pins the chip has, MISO, SCK and MOSI
+    /// on SPI pins of their kind, all on one SPI block.
+    pub fn check_sd(&self) -> Result<(), &'static str> {
+        if !self.sd.iter().all(|&p| pins::exists(p)) {
+            return Err("an SD pin this chip doesn't have");
+        }
+        if self.sd.iter().enumerate().any(|(i, p)| self.sd[..i].contains(p)) {
+            return Err("an SD pin is used twice");
+        }
+        let [miso, _, sck, mosi] = self.sd;
+        if pins::spi_role(miso) != SpiRole::Rx || pins::spi_role(sck) != SpiRole::Sck || pins::spi_role(mosi) != SpiRole::Tx {
+            return Err("SD MISO, SCK, MOSI must be SPI RX, SCK, TX pins");
+        }
+        if pins::spi_block(miso) != pins::spi_block(sck) || pins::spi_block(mosi) != pins::spi_block(sck) {
+            return Err("SD MISO, SCK and MOSI must be on the same SPI");
         }
         Ok(())
     }

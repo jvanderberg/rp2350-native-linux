@@ -247,7 +247,8 @@ fn psram_qmi_setup(csr_clkdiv: u32, timing: u32) {
 /// MIN_DESELECT=6, CLKDIV=4 (87 MHz at 348; PicoMite's value above 288 MHz).
 const M0_TIMING_SLOW: u32 = 0x4000_6204;
 /// Flash (M0) timing at `sys_hz`: COOLDOWN=1, MIN_DESELECT=6, CLKDIV from
-/// `qmi_clkdiv`, and RXDELAY (half system clocks) about 5.7 ns. At 348 MHz
+/// `qmi_clkdiv`, and RXDELAY (half system clocks) at least 5.7 ns (5.75 to
+/// 7.5 ns over the presets). At 348 MHz
 /// that is 0x4000_6403: CLKDIV=3, 116 MHz, the PSRAM's clock on the same
 /// bus; RXDELAY 2 to 7 all read the flash correctly there and 1 does not,
 /// and 4 is the PSRAM's value too. Kernel text misses are flash reads, so
@@ -300,6 +301,9 @@ pub fn init_clocks(
     let xosc = hal::xosc::setup_xosc_blocking(xosc, XTAL_HZ.Hz()).unwrap();
     watchdog.enable_tick_generation((XTAL_HZ / 1_000_000) as u16);
     vreg_set_voltage(cpu.vsel);
+    // let the new voltage settle before the clock goes up (the SDK waits
+    // too): at least 1 ms at any clock the boot ROM leaves
+    cortex_m::asm::delay(150_000);
     flash_timing(M0_TIMING_SLOW);
     let mut clocks = hal::clocks::ClocksManager::new(clocks);
     let pll = hal::pll::PLLConfig {

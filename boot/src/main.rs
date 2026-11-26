@@ -273,10 +273,16 @@ fn main() -> ! {
     rtt_init_print!();
     let mut pac = hal::pac::Peripherals::take().unwrap();
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
-    // the config first: it has the CPU speed
+    // this boot counts as failed until Linux's init says otherwise, and the
+    // watchdog runs from here (boot.rs)
+    let failed = boot::failed_boots();
+    boot::set_failed_boots(failed + 1);
+    boot::watchdog_arm();
+    // the config first: it has the CPU speed; after failed boots, the
+    // stock speed, in case the saved one is what fails
     let loaded = config::Config::load();
     let mut cfg = loaded.unwrap_or_else(|_| config::Config::defaults_from_flash());
-    let cpu = cfg.cpu;
+    let cpu = if failed >= boot::FAILED_BOOTS_MAX { 0 } else { cfg.cpu };
     let preset = &board::CPU_PRESETS[usize::from(cpu)];
     let clocks = board::init_clocks(
         preset,
@@ -315,23 +321,25 @@ fn main() -> ! {
         preset.mv % 1000 / 10
     ));
 
-    // setup, or the countdown
-    let failed = boot::failed_boots();
+    // setup, or the countdown. A sector tools/wifi.sh wrote (a network
+    // only) boots the defaults with that network, as before setup existed,
+    // so a board without a terminal still boots.
     let request = boot::take_request();
     let why = match loaded {
         Err(config::Missing::Empty) => Some(setup::Why::Empty),
-        Err(config::Missing::Legacy) => Some(setup::Why::Legacy),
         Err(config::Missing::Invalid) => Some(setup::Why::Invalid),
-        Ok(_) if failed >= boot::FAILED_BOOTS_MAX => Some(setup::Why::FailedBoots(failed)),
-        Ok(_) if request == boot::REQ_SETUP => Some(setup::Why::Requested),
-        Ok(_) => None,
+        _ if failed >= boot::FAILED_BOOTS_MAX => Some(setup::Why::FailedBoots(failed)),
+        _ if request == boot::REQ_SETUP => Some(setup::Why::Requested),
+        _ => None,
     };
-    let saved = loaded.ok();
+    let mut saved = loaded.ok();
     let mut hw = setup::Hw { con: &mut con, resets: &mut pac.RESETS, sys_hz, peri_hz, cpu };
+    let legacy = matches!(loaded, Err(config::Missing::Legacy));
     match why {
-        Some(w) => cfg = setup::run(&mut hw, cfg, saved, w),
+        Some(w) => cfg = setup::run(&mut hw, cfg, &mut saved, w),
         None if request != boot::REQ_NO_COUNTDOWN && cfg.countdown > 0 && setup::countdown(hw.con, cfg.countdown) => {
-            cfg = setup::run(&mut hw, cfg, saved, setup::Why::Key);
+            let w = if legacy { setup::Why::Legacy } else { setup::Why::Key };
+            cfg = setup::run(&mut hw, cfg, &mut saved, w);
         }
         None => {}
     }
@@ -353,7 +361,7 @@ fn main() -> ! {
             Ok(p) => break p,
             Err(e) => {
                 say_now(hw.con, format_args!("nativeboot: PSRAM init failed: {:?}\n", e));
-                cfg = setup::run(&mut hw, cfg, saved, setup::Why::NoPsram);
+                cfg = setup::run(&mut hw, cfg, &mut saved, setup::Why::NoPsram);
             }
         }
     };
@@ -395,6 +403,7 @@ fn main() -> ! {
             "nativeboot: no kernel/DTB in flash (kernel word {:08x}, DTB magic {:08x}); run load.sh\n",
             k0, dtb_magic
         ));
+        boot::watchdog_off();
         loop {
             con.poll();
         }
@@ -429,9 +438,10 @@ fn main() -> ! {
     // give core 1 a moment to forward the banner if a terminal is open
     let t0 = rd(TIMERAWL);
     while rd(TIMERAWL).wrapping_sub(t0) < 20_000 {}
-    boot::set_failed_boots(boot::failed_boots() + 1);
     if tree.watchdog {
         boot::watchdog_arm();
+    } else {
+        boot::watchdog_off();
     }
     boot_kernel(KERNEL, tree.addr)
 }

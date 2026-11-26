@@ -513,7 +513,7 @@ async fn run(pwr: Pwr, spi: PioSpi, creds: Option<Creds>) {
         );
         READY.store(true, Ordering::Relaxed);
         let Some(c) = creds else {
-            rprintln!("[wifi] no network configured (tools/wifi.sh)");
+            rprintln!("[wifi] no network configured (setup)");
             return;
         };
         // Join, and join again when the link stays down: the chip

@@ -3,19 +3,23 @@
 //! reboots, and are cleared by a power-on reset; RP2350 datasheet 5.2.3):
 //!
 //! - SCRATCH0, boots without success: `BOOTS_MAGIC | n`. The stub adds one
-//!   before it starts Linux; Linux zeroes it once its init runs
-//!   (/proc/rp2350/boot_ok, written by /sbin/overlay-init). Two in a row
-//!   that didn't get there open setup instead of a third.
+//!   as it starts; Linux zeroes it once its init runs (/proc/rp2350/boot_ok,
+//!   written by /sbin/overlay-init), and setup sets it to one (this boot).
+//!   Two in a row that didn't get there open setup instead of a third, at
+//!   the stock CPU speed.
 //! - SCRATCH1, a request for the next boot: `REQ_SETUP` (Linux's `reboot
 //!   config`, /proc/rp2350/next_boot) opens setup; `REQ_NO_COUNTDOWN`
 //!   (setup, after saving) skips the countdown once.
 //!
 //! linux/mach-rp2350/board.c has the same values.
 //!
-//! The watchdog: the stub starts it (`watchdog_arm`, about 16.7 s) just
-//! before Linux, when the device tree says the kernel feeds it
-//! (`/chosen/rp2350,boot-watchdog`). board.c feeds it until boot_ok, then
-//! stops it, so a kernel that hangs or panics on the way resets the board
+//! The watchdog (`watchdog_arm`, about 16.7 s) runs from the stub's start,
+//! so a CPU speed that hangs the stub resets the board and counts as a
+//! failed boot: the countdown and setup feed it while they wait. Just
+//! before Linux the stub starts it again when the device tree says the
+//! kernel feeds it (`/chosen/rp2350,boot-watchdog`), and stops it if not.
+//! board.c feeds it until boot_ok, for at most two minutes, then stops it,
+//! so a kernel that hangs, panics, or doesn't get to init resets the board
 //! and counts as a failed boot.
 
 use core::ptr::{read_volatile, write_volatile};
@@ -80,6 +84,11 @@ pub fn watchdog_arm() {
     wr(PSM_WDSEL, WDSEL_ALL_BUT_OSC);
     wr(WATCHDOG_LOAD, WATCHDOG_LOAD_MAX);
     wr(WATCHDOG_CTRL, rd(WATCHDOG_CTRL) | WATCHDOG_ENABLE);
+}
+
+/// Start the watchdog's count again (while the stub waits for a key).
+pub fn watchdog_feed() {
+    wr(WATCHDOG_LOAD, WATCHDOG_LOAD_MAX);
 }
 
 /// A whole-chip reset (as board.c's restart).

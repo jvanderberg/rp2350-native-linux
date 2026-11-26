@@ -6,6 +6,7 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/printk.h>
 #include <linux/proc_fs.h>
 #include <linux/reboot.h>
 #include <linux/seq_file.h>
@@ -67,17 +68,25 @@ static void rp2350_restart(enum reboot_mode mode, const char *cmd)
  * before it starts the kernel, when the device tree has
  * /chosen/rp2350,boot-watchdog. It is fed here from early on, by a timer,
  * until /sbin/overlay-init writes /proc/rp2350/boot_ok; then it is stopped
- * and the stub's count of boots that didn't get that far is zeroed. A
- * kernel that hangs or panics before that resets the board, and after two
- * such boots in a row the stub opens its setup screen instead of booting.
+ * and the stub's count of boots that didn't get that far is zeroed. The
+ * timer feeds it for BOOT_WD_FEEDS seconds at most, so a boot that never
+ * gets there resets the board too, not only a hang with interrupts off or
+ * a panic; after two such boots in a row the stub opens its setup screen
+ * instead of booting.
  */
+#define BOOT_WD_FEEDS		120
 static struct timer_list boot_wd;
 static bool boot_wd_on;
+static unsigned int boot_wd_fed;
 
 static void boot_wd_feed(struct timer_list *t)
 {
 	writel(WATCHDOG_LOAD_MAX, RP_WATCHDOG_LOAD);
-	mod_timer(t, jiffies + HZ);
+	if (++boot_wd_fed < BOOT_WD_FEEDS)
+		mod_timer(t, jiffies + HZ);
+	else
+		pr_warn("rp2350: no boot_ok in %u s; the watchdog will reset the board\n",
+			BOOT_WD_FEEDS);
 }
 
 static ssize_t boot_ok_write(struct file *f, const char __user *buf, size_t n, loff_t *pos)
