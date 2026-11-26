@@ -57,6 +57,26 @@ screen ([docs/boot-and-io.md](docs/boot-and-io.md), "Setup and the board
 config"). Those pins, PIO0 and the SD card's SPI block belong to core 1;
 the other pins are Linux's ([pins/README.md](pins/README.md)).
 
+## Releases
+
+Each release on GitHub has:
+
+- `rp2350-native-linux-VERSION.uf2`: the boot stub, kernel, device tree
+  and root file system. Hold BOOTSEL while plugging the board in, then
+  copy it onto the `RP2350` drive (about 10 MB of data; the copy takes a
+  few minutes). The board then boots; a new board starts in the setup
+  screen on the USB console (below). The UF2 leaves `/home` and the board
+  config as they are, so an update keeps both.
+- `rp2350-extras-VERSION.zip`: [`extras/`](extras/README.md) with its
+  programs built by the userland's gcc at `-O2`, to copy to the SD card
+  (the board has no `unzip`: unzip it on the computer). The sources are
+  there too, so each program can still be rebuilt on the board with `cc`.
+- `SHA256SUMS`.
+
+The workflow `.github/workflows/release.yml` builds them from scratch
+(`./build-all.sh`, then `tools/release.sh`) on a GitHub arm64 runner when
+a `v*` tag is pushed.
+
 ## Building from scratch
 
 Needs Docker (with about 25 GB free in its disk), git, Python 3, Rust
@@ -80,8 +100,8 @@ incremental after that:
    `claude-guest-mcp` (`claude-remote/`, host Rust),
    `busybox-atrans`; then `out/atrans-root/` and
    `out/atrans-sysroot.tar.gz` ([atrans/README.md](atrans/README.md)).
-3. tcc ([tcc/](tcc/)): `tcc/apply-patches.sh` (tinycc from repo.or.cz plus
-   `tcc/patches/`), then in the tcc image (`tcc/run-host.sh sh
+3. tcc ([tcc/](tcc/)): `tcc/apply-patches.sh` (tinycc from its GitHub
+   mirror, or repo.or.cz, plus `tcc/patches/`), then in the tcc image (`tcc/run-host.sh sh
    /native/tcc/...`): `import-sysroot.sh /native/out/atrans-sysroot.tar.gz`,
    `host-build.sh` (the cross tcc), and with `BOARD_LIBC=/usr/lib/atrans`
    `native-build.sh /native/out/tcc-root` (the board's tree: `/usr/bin/tcc`,
@@ -93,6 +113,10 @@ incremental after that:
    (`post-build-devices.sh`), `out/xip.romfs`, and the kernel.
 6. `cd boot && cargo build --release`: the boot stub (`load.sh` does this
    too).
+
+Then `tools/release.sh [VERSION]` makes the release files in
+`out/release/` (the UF2, with `tools/mkuf2.py`, and the extras zip, with
+`tools/extras-gcc.sh`).
 
 Partial rebuilds:
 
@@ -270,7 +294,8 @@ On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
 | `claude-remote/` | `claude-remote` and `claude-guest-mcp`, an MCP tool server built as an ATRANS program |
 | `tests/` | Kernel tests (`forktest`, `forktest3`, `swaptest`), the FDPIC switch baseline `pingpong`, `sramload`, `watchd`, and the ATRANS linker scripts |
 | `docker/` | The image the Buildroot builds run in (`rp2350-native-build`) |
-| `tools/` | `preflight.sh` (sourced by the scripts), board session tools (`board-lock.sh`, `boot-wait.py`, `serial-chat.py`, `board-cmd.py`), `hot-text.py` (which kernel code goes in SRAM, from `/proc/pcsample` profiles), and the two-board pin harness (`pin-test.py`, `pintester/`) |
+| `.github/workflows/` | `release.yml`: the whole build and the release files on a GitHub arm64 runner |
+| `tools/` | `release.sh`, `mkuf2.py` and `extras-gcc.sh` (the release files), `preflight.sh` (sourced by the scripts), board session tools (`board-lock.sh`, `boot-wait.py`, `serial-chat.py`, `board-cmd.py`), `hot-text.py` (which kernel code goes in SRAM, from `/proc/pcsample` profiles), and the two-board pin harness (`pin-test.py`, `pintester/`) |
 | `docs/` | Design notes and measurements (below) |
 
 ## Documentation
