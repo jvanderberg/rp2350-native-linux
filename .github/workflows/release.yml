@@ -77,8 +77,6 @@ jobs:
         run: |
           v=${{ steps.v.outputs.version }}
           cat > notes.md <<EOF
-          Built by the [release workflow](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}) from ${GITHUB_SHA}.
-
           - **rp2350-native-linux-$v.uf2**: the boot stub, kernel, device tree and root file system. Hold BOOTSEL while plugging the board in and copy this onto the RP2350 drive. It leaves /home and the board config (the setup screen's settings) as they are.
           - **rp2350-extras-$v.zip**: \`extras/\` with its programs built by the userland's gcc at -O2 (bbs is built by \`bbsctl\` on the board).
           - **SHA256SUMS**

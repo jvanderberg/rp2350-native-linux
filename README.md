@@ -57,25 +57,41 @@ screen ([docs/boot-and-io.md](docs/boot-and-io.md), "Setup and the board
 config"). Those pins, PIO0 and the SD card's SPI block belong to core 1;
 the other pins are Linux's ([pins/README.md](pins/README.md)).
 
-## Releases
+## Installing
 
-Each release on GitHub has:
+Download the files from the **[latest release](https://github.com/jvanderberg/rp2350-native-linux/releases/latest)**,
+or build them yourself ([Building from scratch](#building-from-scratch)).
+The board needs the [hardware](#hardware) above.
 
-- `rp2350-native-linux-VERSION.uf2`: the boot stub, kernel, device tree
-  and root file system. Hold BOOTSEL while plugging the board in, then
-  copy it onto the `RP2350` drive (about 10 MB of data; the copy takes a
-  few minutes). The board then boots; a new board starts in the setup
-  screen on the USB console (below). The UF2 leaves `/home` and the board
-  config as they are, so an update keeps both.
-- `rp2350-extras-VERSION.zip`: [`extras/`](extras/README.md) with its
-  programs built by the userland's gcc at `-O2`, to copy to the SD card
-  (the board has no `unzip`: unzip it on the computer). The sources are
-  there too, so each program can still be rebuilt on the board with `cc`.
-- `SHA256SUMS`.
+1. **Flash it.** Hold BOOTSEL while plugging the board into USB. It shows
+   up as a drive named `RP2350`. Copy `rp2350-native-linux-VERSION.uf2`
+   onto it. The copy takes a few minutes, then the board restarts.
+2. **Open the console.** The board is a USB serial port:
 
-The workflow `.github/workflows/release.yml` builds them from scratch
-(`./build-all.sh`, then `tools/release.sh`) on a GitHub arm64 runner when
-a `v*` tag is pushed.
+   ```sh
+   screen /dev/cu.usbmodemnative1 115200   # macOS
+   screen /dev/ttyACM0 115200              # Linux
+   ```
+
+3. **Set it up.** A new board opens the setup screen on the console. Press
+   Ctrl-L if the screen is blank. Check the pins for your wiring. Use
+   **Find the PSRAM** if you don't know its chip select. Then enter your
+   Wi-Fi network and passphrase, and choose **Save and boot**.
+4. **Log in** as `root`, with no password.
+5. **Make `/home`, once.** On a new board, `/home` (where `/root` lives) is
+   in RAM until its flash region holds jffs2. To create it, run
+   `flash_eraseall -j /dev/mtd3` and then `reboot` ([Using it](#using-it)).
+
+Updating is step 1 alone. The UF2 leaves `/home` and the setup screen's
+settings as they are.
+
+**Extras.** `rp2350-extras-VERSION.zip` has the [extras](extras/README.md)
+(games, `mc`, `tm`, `xterm`, Wolfenstein 3D and more), built and ready to
+run, with their sources. Unzip it on your computer (the board has no
+`unzip`) and copy the `extras` folder to the SD card. On the board, run
+them from `/mnt/sd/extras`, for example `/mnt/sd/extras/games/asteroids`.
+
+**`SHA256SUMS`** has the files' checksums.
 
 ## Building from scratch
 
