@@ -61,6 +61,8 @@ struct term {
     int x, y, w, h;                     /* the area, in pixels */
     int cw, ch, asc;                    /* cell size, baseline */
     int f_norm, f_bold, unicode;
+    int f_fall;                         /* with TrueType: the server's Unicode font, for
+                                           characters it hasn't (0: none) */
     unsigned palette[256], fg, bg, cursor;
 
     int view;                           /* lines scrolled back into history */
@@ -146,9 +148,13 @@ static inline void term_init(struct term *t, int px)
     t->fg = x_rgb(230, 237, 243);
     t->cursor = x_rgb(88, 166, 255);
 
-    if ((t->f_norm = x_font_ttf("DejaVuSansMono.ttf", px > 0 ? px : 12)) != 0) {
+    if ((t->f_norm = x_font_ttf_cell("DejaVuSansMono.ttf", px > 0 ? px : 12)) != 0) {
         t->unicode = 1;
-        t->f_bold = x_font_ttf("DejaVuSansMono-Bold.ttf", px > 0 ? px : 12);
+        t->f_bold = x_font_ttf_cell("DejaVuSansMono-Bold.ttf", px > 0 ? px : 12);
+        /* DejaVu has no CJK or katakana: those from misc-fixed, if the server has it */
+        snprintf(name, sizeof name, fams[0][0], px > 0 ? px + 1 : 13);
+        if ((t->f_fall = x_font_cell(name)) == 0)
+            t->f_fall = x_font_cell("-misc-fixed-medium-r-normal--13-*-*-*-c-*-iso10646-1");
     }
     if (px <= 0)
         px = 13;
@@ -503,6 +509,7 @@ static inline const struct cell *term_row_sel(struct term *t, int r)
 static inline void term_draw_run(struct term *t, int y, const struct cell *c, int x0, int x1, int cx)
 {
     unsigned int text[512];
+    short col[512];                     /* each character's cell, from the run's first */
     int py = t->y + y * t->ch;
 
     while (x0 < x1) {
@@ -531,6 +538,7 @@ static inline void term_draw_run(struct term *t, int y, const struct cell *c, in
                 continue;
             }
             text[n] = c[x].ch ? c[x].ch : ' ';
+            col[n] = (short)(x - x0);
             if (text[n] != ' ')
                 blank = 0;
             n++;
@@ -539,9 +547,26 @@ static inline void term_draw_run(struct term *t, int y, const struct cell *c, in
         x_color(bg);
         x_fill_rect(px, py, (x - x0) * t->cw, t->ch);
         if (!blank && !(fl & AT_HIDDEN)) {
-            x_text_font(fl & AT_BOLD && t->f_bold ? t->f_bold : t->f_norm);
+            int f = fl & AT_BOLD && t->f_bold ? t->f_bold : t->f_norm, miss = 0;
+
+            x_text_font(f);
             x_color(fl & AT_DIM ? t->palette[8] : fg);
-            if (t->unicode) {
+            if (t->f_fall)              /* a TrueType font: does it have them all? */
+                for (int i = 0; i < n && !miss; i++)
+                    miss = text[i] > ' ' && !x_font_has(f, text[i]);
+            if (miss) {                 /* those it hasn't, in the server's font */
+                unsigned int own[512];
+
+                memcpy(own, text, (size_t)n * sizeof *own);
+                for (int i = 0; i < n; i++)
+                    if (text[i] > ' ' && !x_font_has(f, text[i]))
+                        own[i] = ' ';
+                x_text16(px, py + t->asc, own, n);
+                x_text_font(t->f_fall);
+                for (int i = 0; i < n; i++)
+                    if (own[i] != text[i])
+                        x_text16(px + col[i] * t->cw, py + t->asc, &text[i], 1);
+            } else if (t->unicode) {
                 x_text16(px, py + t->asc, text, n);
             } else {
                 char s[512];

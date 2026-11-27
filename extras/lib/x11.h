@@ -1506,6 +1506,7 @@ struct xi_ttf {
     size_t n;
     unsigned int glyf, loca, hmtx, cmap;
     int loca_long, cmap_fmt, nhm, nglyphs, upem, ascent, descent, px, qmark;
+    int cell_w, cell_asc, cell_desc;    /* x_font_ttf_cell: glyphs cut to this box */
     unsigned char *have[256];           /* which code points the glyph set has: bit pages */
 };
 
@@ -2057,6 +2058,24 @@ static void xi_ttf_render(const struct xi_ttf *f, int g, struct xi_glyph *out)
     }
     out->w = r.w;
     out->h = r.h;
+    if (f->cell_w > 0) {                /* cut to the cell: nothing spills into the next */
+        int x0 = out->left < 0 ? -out->left : 0;
+        int y0 = out->top < -f->cell_asc ? -f->cell_asc - out->top : 0;
+        int x1 = out->left + out->w > f->cell_w ? f->cell_w - out->left : out->w;
+        int y1 = out->top + out->h > f->cell_desc ? f->cell_desc - out->top : out->h;
+
+        if (x1 <= x0 || y1 <= y0) {
+            out->w = out->h = 0;
+        } else {
+            for (int y = y0; y < y1; y++)
+                memmove(out->alpha + (y - y0) * (x1 - x0), out->alpha + y * out->w + x0,
+                        (size_t)(x1 - x0));
+            out->left += x0;
+            out->top += y0;
+            out->w = x1 - x0;
+            out->h = y1 - y0;
+        }
+    }
 done:
     xi_sc.o = o;
 }
@@ -2190,7 +2209,7 @@ static unsigned char *xi_read_font(const char *name, size_t *len)
  * once (on the board, at 13 pixels: 15 ms built with gcc -O2, 70 with
  * tcc, and about 24 KB); others the first time x_text16 draws them. 0 ("fixed") if the server has no RENDER or the file
  * can't be read. */
-static inline int x_font_ttf(const char *file, int px)
+static int xi_font_ttf(const char *file, int px, int cell)
 {
     struct xi_ttf *f;
     unsigned int cps[224];
@@ -2230,8 +2249,31 @@ static inline int x_font_ttf(const char *file, int px)
         }
     }
     xi_fonts[fi].defw = xi_fonts[fi].w['?'];
+    if (cell) {
+        f->cell_w = xi_fonts[fi].w['M'];
+        f->cell_asc = xi_fonts[fi].ascent;
+        f->cell_desc = xi_fonts[fi].descent;
+    }
     xi_ttf_add(fi, cps, n);
     return fi;
+}
+
+static inline int x_font_ttf(const char *file, int px) { return xi_font_ttf(file, px, 0); }
+
+/* The same for a grid of characters (a terminal), from a fixed-width font:
+ * each glyph is cut to its cell, as wide as "M" and the font's height, so
+ * that none reaches into the next cell, where it would stay when only that
+ * cell is drawn again. */
+static inline int x_font_ttf_cell(const char *file, int px) { return xi_font_ttf(file, px, 1); }
+
+/* Whether font f has a glyph for code point c: a TrueType font's own
+ * answer; for the server's fonts, 1 (it doesn't say). */
+static inline int x_font_has(int f, unsigned int c)
+{
+    f = f >= 0 && f < xi_nfonts ? f : 0;
+    if (xi_fonts[f].ttf == NULL)
+        return 1;
+    return c < 0x10000 && xi_ttf_glyph(xi_fonts[f].ttf, c) != 0;
 }
 
 /* Text in a TrueType font: RenderCompositeGlyphs8 or 16, 252 glyphs an item. */
