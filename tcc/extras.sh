@@ -23,7 +23,7 @@ done
 run bbs sh -c 'cd bbs && tcc -DBBSDIR="\"/tmp\"" -o bbs bbs.c'
 ls -l games/stackfall games/rain games/asteroids games/life maze/maze \
 	maze/xmaze pulse/pulse pulse/xpulse samples/bogomips samples/mandel \
-	samples/xeyes httpd/httpd mc/mc tm/tm xterm/xterm mc/xmc bbs/bbs 2>&1 | awk '{print $5, $NF}'
+	samples/xeyes samples/xgallery httpd/httpd mc/mc tm/tm xterm/xterm mc/xmc bbs/bbs 2>&1 | awk '{print $5, $NF}'
 echo "--- mandel 20:"; qemu-arm samples/mandel 20 | head -12
 echo "--- bogomips:"; timeout 20 qemu-arm samples/bogomips | head -5
 echo "extras: $ok built, $bad failed"

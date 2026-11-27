@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build the small samples: bogomips, mandel and xeyes.
+# Build the small samples: bogomips, mandel, xeyes and xgallery.
 # Each source file is compiled on its own and then linked, which keeps
 # tcc's peak memory low enough for the board. Everything is rebuilt every
 # time: without a real-time clock the board's file times can't be trusted.
@@ -34,13 +34,14 @@ build() {
 
 # not ${*:-...}: busybox hush expands that to nothing
 targets="$*"
-[ -n "$targets" ] || targets="bogomips mandel xeyes"
+[ -n "$targets" ] || targets="bogomips mandel xeyes xgallery"
 status=0
 for t in $targets; do
     case $t in
         bogomips) build bogomips bogomips.c || status=1 ;;
         mandel)   build mandel mandel.c || status=1 ;;
         xeyes)    build xeyes xeyes.c || status=1 ;;
+        xgallery) build xgallery xgallery.c || status=1 ;;
         *) echo "unknown program: $t" >&2; status=1 ;;
     esac
 done

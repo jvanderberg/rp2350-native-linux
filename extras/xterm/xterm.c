@@ -13,10 +13,15 @@
  * (Shift-PgUp/PgDn too) unless the program asked for the mouse, as mc
  * does; then it gets the clicks. The window can be resized.
  *
- * The font is the first of misc-fixed (the classic xterm font, which has
- * the line-drawing characters), DejaVu Sans Mono and Lucida Typewriter
- * that the X server has, at -fs pixels: 13 by default; misc-fixed also
- * comes in 14, 15, 18 and 20.
+ * Dragging selects text and copies it; the middle button, Shift-Insert and
+ * Ctrl-Shift-V paste (from any program: with XQuartz, the Mac's clipboard
+ * too).
+ *
+ * The font is DejaVu Sans Mono, anti-aliased, where the X server has the
+ * RENDER extension: -fs pixels, 12 by default. Without RENDER it is the
+ * first of misc-fixed (the classic xterm font, which has the line-drawing
+ * characters), DejaVu Sans Mono and Lucida Typewriter that the server has,
+ * 13 pixels by default; misc-fixed also comes in 14, 15, 18 and 20.
  *
  * The terminal itself is ../lib/vt/vtpane.h, which xmc uses for its
  * output view too.
@@ -31,7 +36,7 @@
 int main(int argc, char **argv)
 {
     static struct term t;
-    int px = 13, cols = 100, rows = 32, hold = 0, i, last_w, last_h;
+    int px = 0, cols = 100, rows = 32, hold = 0, i, last_w, last_h;
     long long resize_at = 0;
     const char *title = "xterm";
     char **cmd = NULL;
@@ -57,8 +62,8 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (px < 6 || px > 48)
-        px = 13;
+    if (px != 0 && (px < 6 || px > 48))
+        px = 0;                         /* the font's usual size */
     if (cols < 10 || cols > 400)
         cols = 100;
     if (rows < 3 || rows > 200)
@@ -105,6 +110,9 @@ int main(int argc, char **argv)
                 break;
             case XE_BUTTON_DOWN: case XE_BUTTON_UP: case XE_MOTION:
                 dirty |= term_mouse(&t, &e);
+                break;
+            case XE_PASTE:
+                dirty |= term_paste(&t, e.text, e.len);
                 break;
             }
         }

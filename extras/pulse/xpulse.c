@@ -22,6 +22,10 @@
  * per update whatever its size. While the window is being resized it
  * keeps its picture; it is laid out again once, when the size settles,
  * each graph drawn whole as one filled polygon and one line.
+ *
+ * Where the X server has RENDER, the text is DejaVu Sans, anti-aliased,
+ * and the graph lines, corners and dots are smooth; otherwise the server's
+ * Helvetica and plain shapes.
  */
 #include "../lib/x11.h"
 #include <errno.h>
@@ -64,6 +68,8 @@ static rgb mix(rgb a, rgb b, int t)
     return c;
 }
 
+static int smooth;                      /* the server has RENDER: smooth shapes */
+
 static void setup_style(void)
 {
     rgb text = { 230, 237, 243 }, dim = { 139, 148, 158 }, faint = { 72, 79, 88 };
@@ -77,6 +83,14 @@ static void setup_style(void)
     c_faint = px(faint);
     c_sel = px(mix(RGB_PANEL, ACC_TX, 220));
 
+    smooth = x_has_render();
+    if ((f_text = x_font_ttf("DejaVuSans.ttf", 12)) != 0) {
+        f_big = x_font_ttf("DejaVuSans-Bold.ttf", 22);
+        f_head = x_font_ttf("DejaVuSans-Bold.ttf", 15);
+        f_bold = x_font_ttf("DejaVuSans-Bold.ttf", 12);
+        f_mono = x_font_ttf("DejaVuSansMono.ttf", 12);
+        return;
+    }
     /* Bitmap fonts that XQuartz and most X servers have; "fixed" if not. */
     f_big = x_font("-adobe-helvetica-bold-r-normal--25-*-*-*-p-*-iso8859-1");
     if (!f_big)
@@ -93,6 +107,9 @@ static int font_h(int f) { return x_font_ascent(f) + x_font_descent(f); }
 
 static void round_rect(int x, int y, int w, int h, int r)
 {
+    if (smooth && w > 0 && h > 0 &&
+        x_aa_round_rect(X_FX(x), X_FX(y), X_FX(w), X_FX(h), X_FX(r), 255))
+        return;
     if (w < 2 * r || h < 2 * r) {
         x_fill_rect(x, y, w, h);
         return;
@@ -103,6 +120,36 @@ static void round_rect(int x, int y, int w, int h, int r)
     x_fill_ellipse(x + w - 2 * r, y, 2 * r, 2 * r);
     x_fill_ellipse(x, y + h - 2 * r, 2 * r, 2 * r);
     x_fill_ellipse(x + w - 2 * r, y + h - 2 * r, 2 * r, 2 * r);
+}
+
+static void dot(int x, int y, int d)
+{
+    if (!smooth || !x_aa_fill_ellipse(X_FX(x), X_FX(y), X_FX(d), X_FX(d), 255))
+        x_fill_ellipse(x, y, d, d);
+}
+
+static void tri3(const short *t)
+{
+    x_fixed f[6];
+
+    for (int i = 0; i < 6; i++)
+        f[i] = X_FX(t[i]);
+    if (!smooth || !x_aa_polygon(f, 3, 255))
+        x_fill_poly(t, 3);
+}
+
+/* A graph's line, 2 pixels wide, through n points. */
+static void graph_line(const short *pts, int n)
+{
+    static x_fixed f[2 * (MAXCOLS + 2)];
+
+    if (smooth && n <= MAXCOLS + 2) {
+        for (int i = 0; i < 2 * n; i++)
+            f[i] = X_FX(pts[i]);    /* on pixel edges: a flat line covers 2 rows exactly */
+        if (x_aa_polyline(f, n, X_FX(2), 255))
+            return;
+    }
+    x_polyline(pts, n);
 }
 
 /* ---------- text and meters that redraw only when they change ---------- */
@@ -271,10 +318,13 @@ static void graph_column(graph *g, int col, int age, int first)
     if (ha > 0)                         /* the gradient is fixed to the plot */
         x_blit(g->grad, 0, half - ha, STEP, ha, x, half - ha);
     x_color(g->hi);
-    if (first)
+    if (first) {
         x_fill_rect(x, ya, STEP, 2);
-    else
-        x_line(x - 1, g->ya, x + STEP - 1, ya);
+    } else {
+        short l[4] = { (short)(x - 1), (short)g->ya, (short)(x + STEP - 1), (short)ya };
+
+        graph_line(l, 2);
+    }
     g->ya = ya;
     if (g->b) {
         int hb = graph_px(g, graph_value(g->b, age), g->h - half - 1);
@@ -283,10 +333,13 @@ static void graph_column(graph *g, int col, int age, int first)
         if (hb > 0)
             x_blit(g->grad2, 0, 0, STEP, hb, x, half);
         x_color(g->hi2);
-        if (first)
+        if (first) {
             x_fill_rect(x, yb, STEP, 2);
-        else
-            x_line(x - 1, g->yb, x + STEP - 1, yb);
+        } else {
+            short l[4] = { (short)(x - 1), (short)g->yb, (short)(x + STEP - 1), (short)yb };
+
+            graph_line(l, 2);
+        }
         g->yb = yb;
         x_color(c_faint);
         x_fill_rect(x, half, STEP, 1);
@@ -335,7 +388,7 @@ static void graph_series(graph *g, const unsigned *s, int down, int *last_y)
     area[na++] = (short)base;
     x_fill_poly_tiled(down ? g->grad2 : g->grad, 0, down ? half : 0, area, na / 2);
     x_color(down ? g->hi2 : g->hi);
-    x_polyline(line, nl / 2);
+    graph_line(line, nl / 2);
 }
 
 /* Everything again, oldest on the left: a dozen requests, whatever the size. */
@@ -489,7 +542,7 @@ static void draw_header(void)
     static char rate_key[48];
 
     x_color(px(ACC_HOST));
-    x_fill_ellipse(M, y + (font_h(f_head) - 10) / 2, 10, 10);
+    dot(M, y + (font_h(f_head) - 10) / 2, 10);
     hostw = x_text_width(f_head, uts.nodename) + 4;
     label(10, M + 18, y, hostw, 0, f_head, c_text, c_bg, "%s", uts.nodename);
     snprintf(ld, sizeof ld, "%s %s  %s", uts.sysname, uts.release, uts.machine);
@@ -531,7 +584,7 @@ static void draw_header(void)
             x_color(c_text);
             x_text(b_rate.x + 10, ty, rate);
             x_color(c_dim);
-            x_fill_poly(tri, 3);
+            tri3(tri);
         }
     }
     label(12, free_x, y + x_font_ascent(f_head) - x_font_ascent(f_text), b_rate.x - 14 - free_x,
@@ -835,7 +888,7 @@ static void draw_table_head(void)
                              (short)(down ? ay + 4 : ay) };
 
             x_color(px(ACC_TX));
-            x_fill_poly(tri, 3);
+            tri3(tri);
         }
     }
 }
@@ -988,7 +1041,7 @@ static void menu_paint(void)
         }
         if (menu.kind == MENU_RATE && menu.it[i].arg == interval_idx) {
             x_color(px(ACC_TX));
-            x_fill_ellipse(menu.x + 11, iy + ITEM_H / 2 - 3, 7, 7);
+            dot(menu.x + 11, iy + ITEM_H / 2 - 3, 7);
         }
         x_text_font(f_text);
         x_color(menu.it[i].enabled ? c_text : c_faint);
@@ -1266,6 +1319,10 @@ int main(int argc, char **argv)
                     menu.kind = MENU_NONE;
                 break;
             case XE_MOTION:
+                x_cursor(!menu.kind && (column_at(e.x, e.y) >= 0 ||
+                                        (e.x >= b_rate.x && e.x < b_rate.x + b_rate.w &&
+                                         e.y >= b_rate.y && e.y < b_rate.y + b_rate.h))
+                             ? X_CURSOR_HAND : X_CURSOR_DEFAULT);
                 if (menu.kind) {
                     int h = menu_hit(e.x, e.y);
 

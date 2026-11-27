@@ -36,6 +36,15 @@
  * button, or the middle button, closes it; a program still running in
  * it is hung up on. The gear holds the settings.
  *
+ * The clipboard: "Copy path" on the right-click menu (or Ctrl-Shift-C)
+ * copies the paths of the marked files, or the current one; Shift-Insert,
+ * Ctrl-Shift-V or the middle button paste onto the command line, into a
+ * dialog's field or into a terminal tab. Dragging over a terminal tab's
+ * text selects and copies it.
+ *
+ * Where the X server has RENDER, the text is DejaVu Sans, anti-aliased,
+ * the corners are smooth and menus and dialogs cast soft shadows.
+ *
  * Like xpulse, nothing is drawn twice: each row, title and line is sent
  * only when what it shows changed, lists scroll with one copy on the
  * server, and menus and dialogs put back what they covered with one copy.
@@ -87,6 +96,7 @@ static const rgb ACC_MARK = { 255, 210, 90 };
 static unsigned c_bg, c_panel, c_grid, c_track, c_text, c_dim, c_faint, c_sel, c_sel_dim,
     c_mark_bg, c_popup;
 static int f_head, f_bold, f_text, f_mono;
+static int smooth;              /* the server has RENDER: anti-aliased shapes */
 static unsigned type_px[16];     /* mc's 16 colours, for file types */
 
 static unsigned px(rgb c) { return x_rgb(c.r, c.g, c.b); }
@@ -125,6 +135,13 @@ static void setup_style(void)
     for (int i = 0; i < 16; i++)
         type_px[i] = px(types[i]);
 
+    smooth = x_has_render();
+    if ((f_text = x_font_ttf("DejaVuSans.ttf", 12)) != 0) {
+        f_head = x_font_ttf("DejaVuSans-Bold.ttf", 15);
+        f_bold = x_font_ttf("DejaVuSans-Bold.ttf", 12);
+        f_mono = x_font_ttf("DejaVuSansMono.ttf", 12);
+        return;
+    }
     f_head = x_font("-adobe-helvetica-bold-r-normal--17-*-*-*-p-*-iso8859-1");
     f_bold = x_font("-adobe-helvetica-bold-r-normal--12-*-*-*-p-*-iso8859-1");
     f_text = x_font("-adobe-helvetica-medium-r-normal--12-*-*-*-p-*-iso8859-1");
@@ -134,6 +151,8 @@ static void setup_style(void)
 static void round_rect(int x, int y, int w, int h, int r)
 {
     if (w <= 0 || h <= 0)
+        return;
+    if (smooth && r >= 1 && x_aa_round_rect(X_FX(x), X_FX(y), X_FX(w), X_FX(h), X_FX(r), 255))
         return;
     if (r < 1 || w < 2 * r || h < 2 * r) {
         x_fill_rect(x, y, w, h);
@@ -153,7 +172,29 @@ static void triangle(int x, int y, int down, unsigned color)
                    (short)(x + 4), (short)(down ? y + 4 : y) };
 
     x_color(color);
+    if (smooth) {
+        x_fixed f[6];
+
+        for (int i = 0; i < 6; i++)
+            f[i] = X_FX(t[i]);
+        if (x_aa_polygon(f, 3, 255))
+            return;
+    }
     x_fill_poly(t, 3);
+}
+
+/* The shadow under a menu or dialog at b: see-through where the server
+ * can blend, a darker panel colour where it can't. */
+static void shadow(box b, int r)
+{
+    if (smooth) {
+        x_color(x_rgb(0, 0, 0));
+        x_aa_round_rect(X_FX(b.x - 3), X_FX(b.y - 1), X_FX(b.w + 6), X_FX(b.h + 6), X_FX(r + 3), 40);
+        x_aa_round_rect(X_FX(b.x - 1), X_FX(b.y + 1), X_FX(b.w + 2), X_FX(b.h + 3), X_FX(r + 1), 70);
+        return;
+    }
+    x_color(px(mix(RGB_BG, RGB_PANEL, 300)));
+    round_rect(b.x - 4, b.y - 2, b.w + 8, b.h + 8, r + 2);
 }
 
 /* ---- text ---- */
@@ -304,6 +345,21 @@ static int xkey(const struct x_event *e)
     if (m & X_MOD_ALT)
         r |= K_ALT;
     return r;
+}
+
+/* Shift-Insert and Ctrl-Shift-V paste; Ctrl-Shift-C copies. */
+static int is_paste_key(const struct x_event *e)
+{
+    int cs = (e->mods & (X_MOD_CTRL | X_MOD_SHIFT)) == (X_MOD_CTRL | X_MOD_SHIFT);
+
+    return ((e->mods & X_MOD_SHIFT) && e->key == X_KEY_INSERT) ||
+           (cs && (e->key == 'V' || e->key == 'v'));
+}
+
+static int is_copy_key(const struct x_event *e)
+{
+    return (e->mods & (X_MOD_CTRL | X_MOD_SHIFT)) == (X_MOD_CTRL | X_MOD_SHIFT) &&
+           (e->key == 'C' || e->key == 'c');
 }
 
 /* The command running, if any: its output is read between events. */
@@ -534,8 +590,7 @@ static void dlg_frame(struct dlgview *v)
     box b = v->b;
     char t[256];
 
-    x_color(px(mix(RGB_BG, RGB_PANEL, 300)));
-    round_rect(b.x - 4, b.y - 2, b.w + 8, b.h + 8, 10);   /* a soft shadow */
+    shadow(b, 8);
     x_color(c_track);
     round_rect(b.x - 1, b.y - 1, b.w + 2, b.h + 2, 9);
     x_color(c_popup);
@@ -772,6 +827,45 @@ static int dlg_default(struct dialog *d)
 }
 
 /* Editing keys for an input field. */
+/* Pasted UTF-8 text into an input field at the cursor, on one line:
+ * newlines and tabs as spaces, other control characters left out, as
+ * much as fits, whole characters only. */
+static void input_paste(struct widget *w, const char *s, int n)
+{
+    int len;
+
+    if (!w->changed) {
+        w->buf[0] = 0;
+        w->pos = 0;
+    }
+    w->changed = 1;
+    len = (int)strlen(w->buf);
+    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r'))
+        n--;                            /* a copied line's end: nothing */
+    for (int i = 0; i < n;) {
+        unsigned char c = (unsigned char)s[i];
+        int k = c < 0x80 ? 1 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+        char sp = ' ';
+        const char *from = s + i;
+
+        if (i + k > n)
+            break;
+        i += k;
+        if (c == '\r' && i < n && s[i] == '\n')
+            continue;                   /* CR LF: one space */
+        if (c == '\n' || c == '\r' || c == '\t')
+            from = &sp, k = 1;
+        else if (c < 32 || c == 127 || (c >= 0x80 && c < 0xC0))
+            continue;                   /* a control character, a stray byte */
+        if (len + k >= w->cap)
+            break;
+        memmove(w->buf + w->pos + k, w->buf + w->pos, (size_t)(len - w->pos + 1));
+        memcpy(w->buf + w->pos, from, (size_t)k);
+        w->pos += k;
+        len += k;
+    }
+}
+
 static void input_key(struct widget *w, int k)
 {
     int len = (int)strlen(w->buf);
@@ -880,6 +974,8 @@ int dlg_run(struct dialog *d)
             break;
         case XE_MOTION:
             i = dlg_hit(v, e.x, e.y);
+            x_cursor(i < 0 ? X_CURSOR_DEFAULT : d->wd[i].type == W_BUTTON ? X_CURSOR_HAND
+                     : d->wd[i].type == W_INPUT ? X_CURSOR_TEXT : X_CURSOR_DEFAULT);
             if (i >= 0 && d->wd[i].type == W_LIST) {
                 int r = (e.y - (v->b.y + v->g[i].y + 2)) / ROW_ITEM + d->wd[i].scroll;
 
@@ -889,8 +985,17 @@ int dlg_run(struct dialog *d)
             }
             v->hover = i;
             break;
+        case XE_PASTE:
+            if (fw && fw->type == W_INPUT)
+                input_paste(fw, e.text, e.len);
+            break;
         case XE_BUTTON_DOWN:
             i = dlg_hit(v, e.x, e.y);
+            if (i >= 0 && e.button == 2 && d->wd[i].type == W_INPUT) {
+                d->focus = i;
+                x_request_paste();      /* the middle button pastes */
+                break;
+            }
             if (i < 0)
                 break;
             if (e.button == 4 || e.button == 5) {
@@ -919,6 +1024,10 @@ int dlg_run(struct dialog *d)
             }
             break;
         case XE_KEY_DOWN:
+            if (is_paste_key(&e)) {
+                x_request_paste();
+                break;
+            }
             k = xkey(&e);
             if (k == K_NONE)
                 break;
@@ -971,6 +1080,7 @@ int dlg_run(struct dialog *d)
         }
     }
     dlg_pop();
+    x_cursor(X_CURSOR_DEFAULT);
     return result;
 }
 
@@ -1134,8 +1244,7 @@ static int popup(int x, int y, const char *title, const pitem *it, int n)
 
     overlays++;
     under_save(&u, (box){ b.x - 4, b.y - 2, b.w + 8, b.h + 8 });
-    x_color(px(mix(RGB_BG, RGB_PANEL, 300)));
-    round_rect(b.x - 4, b.y - 2, b.w + 8, b.h + 8, 9);
+    shadow(b, 6);
     x_color(c_track);
     round_rect(b.x - 1, b.y - 1, b.w + 2, b.h + 2, 7);
     x_color(c_popup);
@@ -2650,7 +2759,7 @@ static void after_op(int changed)
 enum {
     CMD_OPEN = 1, CMD_VIEW, CMD_EDIT, CMD_COPY, CMD_MOVE, CMD_DELETE, CMD_MKDIR, CMD_MARK,
     CMD_SELECT, CMD_UNSELECT, CMD_ALL, CMD_NONE, CMD_INVERT, CMD_HIDDEN, CMD_RESCAN, CMD_SWAP,
-    CMD_OUTPUT, CMD_NAME, CMD_PATH, CMD_TERMINAL, CMD_NEWTAB, CMD_USER = 100
+    CMD_OUTPUT, CMD_NAME, CMD_PATH, CMD_TERMINAL, CMD_NEWTAB, CMD_COPYPATH, CMD_USER = 100
 };
 
 static void additem(pitem *it, int *n, const char *text, const char *side, int cmd, int on)
@@ -2705,6 +2814,8 @@ static void context_menu(int x, int y, int on_entry)
     additem(it, &n, "Terminal here", "C-n", CMD_TERMINAL, 1);
     if (e && !(e->flags & E_UPDIR))
         additem(it, &n, "Name to command line", NULL, CMD_NAME, 1);
+    if (sel)
+        additem(it, &n, p->nmarked > 1 ? "Copy paths" : "Copy path", "C-S-c", CMD_COPYPATH, 1);
     additem(it, &n, opt_show_hidden ? "Hide dot files" : "Show dot files", "M-.", CMD_HIDDEN, 1);
     additem(it, &n, "Rescan", "C-r", CMD_RESCAN, 1);
 
@@ -2729,6 +2840,43 @@ static void context_menu(int x, int y, int on_entry)
     if (cmd)
         command(cmd, &um);
     usermenu_close(&um);
+}
+
+/* The full paths of the marked files, or of the current one, one a line,
+ * on the clipboard. */
+static void copy_paths(struct panel *p)
+{
+    size_t cap = 4096, len = 0;
+    char *out = malloc(cap);
+    int n = 0;
+
+    if (out == NULL)
+        return;
+    for (int i = 0; i < p->n; i++) {
+        struct entry *e = &p->e[i];
+        size_t need;
+
+        if (p->nmarked ? !(e->flags & E_MARKED) : i != p->cur)
+            continue;
+        if (e->flags & E_UPDIR)
+            continue;
+        need = strlen(p->path) + strlen(e->name) + 3;
+        if (len + need > cap) {
+            char *bigger = realloc(out, cap = (len + need) * 2);
+
+            if (bigger == NULL)
+                break;
+            out = bigger;
+        }
+        len += (size_t)snprintf(out + len, cap - len, "%s%s%s%s", n ? "\n" : "", p->path,
+                                strcmp(p->path, "/") ? "/" : "", e->name);
+        n++;
+    }
+    if (n > 0) {
+        x_set_clipboard(out, len);
+        say(n == 1 ? "copied the path" : "copied %d paths", n);
+    }
+    free(out);
 }
 
 static void command(int cmd, struct usermenu *um)
@@ -2784,6 +2932,7 @@ static void command(int cmd, struct usermenu *um)
         job_start(pan[act].path, "exec ${SHELL:-/bin/sh} -l", "sh", 1);
         break;
     case CMD_NEWTAB: tab_new_files(); break;
+    case CMD_COPYPATH: copy_paths(p); break;
     case CMD_NAME:
         if (e) {
             char q[PATH_MAX + 8] = "";
@@ -3171,8 +3320,12 @@ static void click(const struct x_event *e)
     if (click_tabs(e))
         return;
     if (ON_TERM) {
-        if (e->button >= 4 || (CUR->running && in_box(b_out_text, e->x, e->y)))
-            term_mouse(&CUR->t, e);     /* history, or the program's mouse */
+        if (e->button >= 4 || in_box(b_out_text, e->x, e->y))
+            term_mouse(&CUR->t, e);     /* history, selecting, or the program's mouse */
+        return;
+    }
+    if (e->button == 2 && in_box(b_cmd, e->x, e->y)) {
+        x_request_paste();              /* onto the command line */
         return;
     }
     if (e->button == 4 || e->button == 5) {
@@ -3534,7 +3687,7 @@ int main(int argc, char **argv)
     x_window("xmc", 1100, 720);
     x_min_size(640, 420);
     setup_style();
-    term_init(&term_proto, 13);
+    term_init(&term_proto, 0);
     term_proto.bg = c_panel;
     term_proto.fg = c_text;
     term_proto.cursor = px(ACC_BLUE);
@@ -3573,6 +3726,19 @@ int main(int argc, char **argv)
                     dirty = 1;
                     break;
                 }
+                if (ON_TERM && is_copy_key(&e)) {
+                    term_copy(&CUR->t);     /* a finished one's selection */
+                    break;
+                }
+                if (!ON_TERM && is_paste_key(&e)) {
+                    x_request_paste();
+                    break;
+                }
+                if (!ON_TERM && is_copy_key(&e)) {
+                    copy_paths(&pan[act]);
+                    dirty = 1;
+                    break;
+                }
                 k = xkey(&e);
                 if (k == K_NONE)
                     break;
@@ -3588,9 +3754,41 @@ int main(int argc, char **argv)
                 click(&e);
                 dirty = 1;
                 break;
+            case XE_PASTE:
+                if (CUR_RUNNING) {
+                    dirty |= term_paste(&CUR->t, e.text, e.len);
+                } else if (!ON_TERM) {
+                    /* onto the command line, on one line, as much as fits */
+                    char line[sizeof cmdline];
+                    int k = 0, room = (int)(sizeof cmdline - 1 - strlen(cmdline));
+
+                    while (e.len > 0 && (e.text[e.len - 1] == '\n' || e.text[e.len - 1] == '\r'))
+                        e.len--;        /* a copied line's end: nothing */
+
+                    for (int j = 0; j < e.len;) {   /* whole characters */
+                        unsigned char c = (unsigned char)e.text[j];
+                        int m = c < 0x80 ? 1 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+
+                        if (j + m > e.len || k + m >= room)   /* cmd_insert needs a byte spare */
+                            break;
+                        if (c == '\r' && j + 1 < e.len && e.text[j + 1] == '\n') {
+                            j++;
+                            continue;
+                        }
+                        if (c == '\n' || c == '\r' || c == '\t')
+                            line[k++] = ' ';
+                        else if (!(c < 32 || c == 127 || (c >= 0x80 && c < 0xC0)))
+                            memcpy(line + k, e.text + j, (size_t)m), k += m;
+                        j += m;
+                    }
+                    line[k] = 0;
+                    cmd_insert(line);
+                    dirty = 1;
+                }
+                break;
             case XE_BUTTON_UP:
-                if (CUR_RUNNING)
-                    term_mouse(&CUR->t, &e);
+                if (ON_TERM)
+                    dirty |= term_mouse(&CUR->t, &e);
                 else if (e.button == 1 && !ON_TERM)
                     dirty |= release(&e);
                 break;
@@ -3601,8 +3799,13 @@ int main(int argc, char **argv)
                     tab_hover = h;
                     dirty = 1;
                 }
-                if (CUR_RUNNING)
-                    term_mouse(&CUR->t, &e);
+                x_cursor(h >= 0 || in_box(b_plus, e.x, e.y) || in_box(b_gear, e.x, e.y)
+                             ? X_CURSOR_HAND
+                         : bar_drag >= 0 || drag.on ? X_CURSOR_DEFAULT
+                         : ON_TERM ? (in_box(b_out_text, e.x, e.y) ? X_CURSOR_TEXT : X_CURSOR_DEFAULT)
+                         : in_box(b_cmd, e.x, e.y) ? X_CURSOR_TEXT : X_CURSOR_DEFAULT);
+                if (ON_TERM)
+                    dirty |= term_mouse(&CUR->t, &e);
                 else if (!ON_TERM)
                     dirty |= motion(&e);    /* only a drag changes anything */
                 break;

@@ -13,7 +13,7 @@ there with `cc` (tcc), using the commands below. On the host,
 | [`games/`](games/) | `asteroids`, `stackfall` (falling blocks), `life`, `rain` (digital rain) | `./build.sh`, then `./asteroids` |
 | [`maze/`](maze/) | A first-person 3D maze, in the terminal and in an X11 window | `./build.sh && ./maze` |
 | [`pulse/`](pulse/) | CPU, memory, network and processes, in the terminal and in an X11 window | `./build.sh && ./pulse` |
-| [`samples/`](samples/) | Small samples: `bogomips`, `mandel`, `xeyes` | `./build.sh && ./mandel` |
+| [`samples/`](samples/) | Small samples: `bogomips`, `mandel`, `xeyes`, `xgallery` | `./build.sh && ./mandel` |
 | [`httpd/`](httpd/README.md) | A small static file server | `./build.sh && ./httpd` |
 | [`tm/`](tm/README.md) | A small tmux work-alike | `./build.sh && ./tm` |
 | [`xterm/`](xterm/README.md) | A terminal in an X11 window | `./build.sh`, see its README |
@@ -67,8 +67,12 @@ network link and sharp at any window size; it takes `-demo` too. `xpulse` is
 column, and a right-click menu to signal a process; an update sends only
 what changed, 1-4 KB. All three use `lib/x11.h`, which speaks the X11
 protocol itself, so no Xlib is needed; it is the window counterpart of
-`lib/ansi.h`. The simplest way to run one is through SSH's X11 forwarding,
-from the machine with the screen:
+`lib/ansi.h`. Where the X server has the RENDER extension (XQuartz and Xorg
+do), `x11.h` also draws anti-aliased text in TrueType fonts (the board has
+DejaVu Sans and DejaVu Sans Mono in `/usr/share/fonts/dejavu`), shapes with
+smooth edges and see-through colours, and has smooth cursors and the
+clipboard; `xgallery` shows them all. The simplest way to run one is
+through SSH's X11 forwarding, from the machine with the screen:
 
 ```
 $ ssh -Y root@BOARD-ADDRESS /mnt/sd/extras/maze/xmaze -demo
@@ -87,7 +91,7 @@ board:
 | File | What it is | Used by |
 |---|---|---|
 | `ansi.h` | Raw keys, the alternate screen and a frame buffer for ANSI terminals | games, maze, pulse |
-| `x11.h` | A small X11 client that speaks the protocol over a socket, with no Xlib | the X11 programs |
+| `x11.h` | A small X11 client that speaks the protocol over a socket, with no Xlib: shapes, images, canvases and core fonts, and through RENDER TrueType text, smooth shapes, translucency and cursors; the clipboard | the X11 programs |
 | `vt/` | The terminal emulator: `vt.c`, scrollback (`sb.c`, `lz.c`), `vtutil.c`, and `vtpane.h`, a terminal in part of an X11 window | tm, xterm, xmc |
 
 ## bbs
