@@ -1,0 +1,395 @@
+Subject: [PATCH] armv7m: spill text and relocations to disk for native links
+
+--- a/tcc.h
++++ b/tcc.h
+@@ -602,6 +602,9 @@
+ typedef struct Section {
+     unsigned long data_offset; /* current data offset */
+     unsigned char *data;       /* section data */
++#ifdef TCC_ARM_THUMB
++    int spill_fd;              /* optional disk-backed text section */
++#endif
+     unsigned long data_allocated; /* used for realloc() handling */
+     TCCState *s1;
+     int sh_name;             /* elf section name (only used during output) */
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -872,6 +872,15 @@
+ /* compile the file opened in 'file'. Return non zero if errors. */
+ static int tcc_compile(TCCState *s1, int filetype, const char *str, int fd)
+ {
++#ifdef TCC_ARM_THUMB
++    /* Startup objects can already be in scratch storage. Code generation
++       requires a memory-backed text section. */
++    if (text_section && text_section->spill_fd) {
++        if (fd > 0)
++            close(fd);
++        return tcc_error_noabort("link scratch requires separate object compilation");
++    }
++#endif
+     /* Here we enter the code section where we use the global variables for
+        parsing and code generation (tccpp.c, tccgen.c, <target>-gen.c).
+        Other threads need to wait until we're done.
+--- a/tccelf.c
++++ b/tccelf.c
+@@ -131,6 +131,12 @@
+ {
+     if (!s)
+         return;
++#ifdef TCC_ARM_THUMB
++    if (s->spill_fd) {
++        close(s->spill_fd);
++        s->spill_fd = 0;
++    }
++#endif
+     tcc_free(s->data);
+     s->data = NULL;
+     s->data_allocated = s->data_offset = 0;
+@@ -297,6 +303,124 @@
+     return symtab;
+ }
+ 
++#ifdef TCC_ARM_THUMB
++/* Opt-in scratch storage for the merged Thumb code and its relocations
++   during a static object-only link. The linker accesses either section a
++   page at a time, keeping the writable ATRANS window available for symbols
++   and the smaller sections. */
++#define TEXT_PAGE 4096
++
++static void spill_error(TCCState *s1)
++{
++    tcc_error_noabort("link scratch I/O: %s", strerror(errno));
++    exit(1);
++}
++
++static void spill_open(Section *s)
++{
++    TCCState *s1 = s->s1;
++    const char *dir = getenv("TCC_LINK_SCRATCH");
++    char *path;
++    if (!dir || !*dir || s->data_offset
++        || (s != text_section && (s->sh_type != SHT_RELX
++            || strcmp(s->name, ".rel.text") || !text_section->spill_fd))
++        || s1->output_type != TCC_OUTPUT_EXE || !s1->static_link
++        || s1->output_format != TCC_OUTPUT_FORMAT_ELF || s->spill_fd)
++        return;
++    path = tcc_malloc(strlen(dir) + sizeof "/tcc-text.XXXXXX");
++    sprintf(path, "%s/tcc-text.XXXXXX", dir);
++    s->spill_fd = mkstemp(path);
++    if (s->spill_fd < 0 || unlink(path) < 0)
++        spill_error(s->s1);
++    /* fd zero can only occur if the caller closed stdin. */
++    if (s->spill_fd == 0) {
++        s->spill_fd = fcntl(0, F_DUPFD, 3);
++        close(0);
++        if (s->spill_fd < 0)
++            spill_error(s->s1);
++    }
++    tcc_free(path);
++}
++
++static void spill_read(Section *s, void *buf, size_t len, unsigned long offset)
++{
++    if (lseek(s->spill_fd, offset, SEEK_SET) < 0
++        || full_read(s->spill_fd, buf, len) != len)
++        spill_error(s->s1);
++}
++
++static void spill_write(Section *s, const void *buf, size_t len, unsigned long offset)
++{
++    const char *p = buf;
++    if (lseek(s->spill_fd, offset, SEEK_SET) < 0)
++        spill_error(s->s1);
++    while (len) {
++        ssize_t n = write(s->spill_fd, p, len);
++        if (n < 0 && errno == EINTR)
++            continue;
++        if (n <= 0)
++            spill_error(s->s1);
++        p += n;
++        len -= n;
++    }
++}
++
++static void spill_append(Section *s, int fd, size_t len, unsigned long offset)
++{
++    unsigned char buf[TEXT_PAGE];
++    while (len) {
++        size_t n = len < sizeof buf ? len : sizeof buf;
++        if (full_read(fd, buf, n) != n)
++            spill_error(s->s1);
++        spill_write(s, buf, n, offset);
++        offset += n;
++        len -= n;
++    }
++}
++/* Relocation entries can also exceed the native linker's RAM budget. */
++typedef struct {
++    Section *sec;
++    unsigned long next, end, page_off;
++    size_t page_len;
++    int writable;
++    ElfW_Rel page[TEXT_PAGE / sizeof(ElfW_Rel)];
++} SpillRelocs;
++
++static ElfW_Rel *spill_reloc_next(SpillRelocs *it)
++{
++    Section *sec = it->sec;
++    unsigned long off = it->next;
++    if (sec->spill_fd) {
++        if (it->end < off || (it->end - off) % sizeof(ElfW_Rel)) {
++            TCCState *s1 = sec->s1;
++            tcc_error_noabort("invalid scratch relocation range");
++            exit(1);
++        }
++        if (it->page_len && (off == it->end
++                || off >= it->page_off + it->page_len)) {
++            if (it->writable)
++                spill_write(sec, it->page, it->page_len, it->page_off);
++            it->page_len = 0;
++        }
++        if (off == it->end)
++            return NULL;
++        if (!it->page_len) {
++            it->page_off = off;
++            it->page_len = it->end - off;
++            if (it->page_len > sizeof it->page)
++                it->page_len = sizeof it->page;
++            spill_read(sec, it->page, it->page_len, off);
++        }
++        it->next += sizeof(ElfW_Rel);
++        return &it->page[(off - it->page_off) / sizeof(ElfW_Rel)];
++    }
++    if (off >= it->end || it->end - off < sizeof(ElfW_Rel))
++        return NULL;
++    it->next += sizeof(ElfW_Rel);
++    return (ElfW_Rel *)(sec->data + off);
++}
++#endif
++
+ /* realloc section and set its content to zero */
+ ST_FUNC void section_realloc(Section *sec, unsigned long new_size)
+ {
+@@ -322,7 +446,11 @@
+ 
+     offset = (sec->data_offset + align - 1) & -align;
+     offset1 = offset + size;
+-    if (sec->sh_type != SHT_NOBITS && offset1 > sec->data_allocated)
++    if (sec->sh_type != SHT_NOBITS && offset1 > sec->data_allocated
++#ifdef TCC_ARM_THUMB
++        && !sec->spill_fd
++#endif
++        )
+         section_realloc(sec, offset1);
+     sec->data_offset = offset1;
+     if (align > sec->sh_addralign)
+@@ -335,6 +463,13 @@
+ ST_FUNC void *section_ptr_add(Section *sec, addr_t size)
+ {
+     size_t offset = section_add(sec, size, 1);
++#ifdef TCC_ARM_THUMB
++    if (sec->spill_fd) {
++        TCCState *s1 = sec->s1;
++        tcc_error_noabort("link scratch requires separate object compilation");
++        exit(1);
++    }
++#endif
+     return sec->data + offset;
+ }
+ 
+@@ -1149,11 +1284,42 @@
+     addr_t tgt, addr;
+     int is_dwarf = s->sh_num >= s1->dwlo && s->sh_num < s1->dwhi;
+ 
++#ifdef TCC_ARM_THUMB
++    unsigned char page[TEXT_PAGE];
++    unsigned long page_off = 0;
++    size_t page_len = 0;
++    SpillRelocs it = {sr, 0, sr->data_offset};
++    if (s->spill_fd && ftruncate(s->spill_fd, s->data_offset) < 0)
++        spill_error(s->s1);
++#endif
+     qrel = (ElfW_Rel *)sr->data;
++#ifdef TCC_ARM_THUMB
++    while ((rel = spill_reloc_next(&it)) != NULL) {
++#else
+     for_each_elem(sr, 0, rel, ElfW_Rel) {
+-	if (s->data == NULL) /* bss */
+-	    continue;
+-        ptr = s->data + rel->r_offset;
++#endif
++#ifdef TCC_ARM_THUMB
++        if (s->spill_fd) {
++            unsigned long off = rel->r_offset;
++            if (off < page_off || off + 4 > page_off + page_len) {
++                if (page_len)
++                    spill_write(s, page, page_len, page_off);
++                page_off = off & ~(TEXT_PAGE - 1ul);
++                if (off - page_off > TEXT_PAGE - 4)
++                    page_off = off;
++                page_len = s->data_offset - page_off;
++                if (page_len > sizeof page)
++                    page_len = sizeof page;
++                spill_read(s, page, page_len, page_off);
++            }
++            ptr = page + (off - page_off);
++        } else
++#endif
++        {
++            if (s->data == NULL) /* bss */
++                continue;
++            ptr = s->data + rel->r_offset;
++        }
+         sym_index = ELFW(R_SYM)(rel->r_info);
+         sym = &((ElfW(Sym) *)symtab_section->data)[sym_index];
+         type = ELFW(R_TYPE)(rel->r_info);
+@@ -1170,6 +1336,10 @@
+         addr = s->sh_addr + rel->r_offset;
+         relocate(s1, rel, type, ptr, addr, tgt);
+     }
++#ifdef TCC_ARM_THUMB
++    if (page_len)
++        spill_write(s, page, page_len, page_off);
++#endif
+ 
+ #ifndef ELF_OBJ_ONLY
+     /* if the relocation is allocated, we change its symbol table */
+@@ -1427,6 +1597,9 @@
+     int i, type, gotplt_entry, reloc_type, sym_index;
+     struct sym_attr *attr;
+     int pass = 0;
++#ifdef TCC_ARM_THUMB
++    SpillRelocs it;
++#endif
+ redo:
+     for(i = 1; i < s1->nb_sections; i++) {
+         s = s1->sections[i];
+@@ -1435,7 +1608,12 @@
+         /* no need to handle got relocations */
+         if (s->link != symtab_section)
+             continue;
++#ifdef TCC_ARM_THUMB
++        it = (SpillRelocs){s, 0, s->data_offset, 0, 0, 1};
++        while ((rel = spill_reloc_next(&it)) != NULL) {
++#else
+         for_each_elem(s, 0, rel, ElfW_Rel) {
++#endif
+             type = ELFW(R_TYPE)(rel->r_info);
+             gotplt_entry = gotplt_entry_type(type);
+             if (gotplt_entry == -1) {
+@@ -2032,6 +2210,10 @@
+         /* no need to handle got relocations */
+         if (s->link != symtab_section)
+             continue;
++#ifdef TCC_ARM_THUMB
++        if (s->spill_fd)
++            continue; /* no x86 GOT relocations in the spilled ARM section */
++#endif
+         for_each_elem(s, 0, rel, ElfW_Rel) {
+             switch (ELFW(R_TYPE) (rel->r_info)) {
+                 case R_X86_64_GOT32:
+@@ -2812,6 +2994,24 @@
+                 offset++;
+             }
+             size = s->sh_size;
++#ifdef TCC_ARM_THUMB
++            if (s->spill_fd) {
++                unsigned char buf[TEXT_PAGE];
++                size_t off = 0;
++                if (ftruncate(s->spill_fd, s->data_offset) < 0)
++                    spill_error(s1);
++                while (off < size) {
++                    size_t n = size - off;
++                    if (n > sizeof buf)
++                        n = sizeof buf;
++                    spill_read(s, buf, n, off);
++                    if (fwrite(buf, 1, n, f) != n)
++                        return -1;
++                    off += n;
++                }
++                offset += size;
++            } else
++#endif
+             if (size)
+                 offset += fwrite(s->data, 1, size, f);
+         }
+@@ -3232,6 +3432,15 @@
+         else if (s1->got)
+             fill_local_got_entries(s1);
+ 
++#ifdef TCC_ARM_THUMB
++    if (text_section->spill_fd) {
++        for (i = 1; i < s1->nb_sections; ++i) {
++            Section *s = s1->sections[i];
++            if (s->sh_type == SHT_RELX && !(s->sh_flags & SHF_ALLOC))
++                free_section(s);
++        }
++    }
++#endif
+     if (dyninf.gnu_hash)
+         update_gnu_hash(s1, dyninf.gnu_hash);
+ 
+@@ -3520,6 +3729,10 @@
+         sm_table[i].new_section = 1;
+     found:
+         size = sh->sh_size;
++#ifdef TCC_ARM_THUMB
++        if (size)
++            spill_open(s);
++#endif
+         /* align start of section */
+         offset = section_add(s, size, sh->sh_addralign);
+         if (sh->sh_addralign > s->sh_addralign)
+@@ -3530,8 +3743,15 @@
+         if (sh->sh_type != SHT_NOBITS && size) {
+             unsigned char *ptr;
+             lseek(fd, file_offset + sh->sh_offset, SEEK_SET);
+-            ptr = s->data + offset;
+-            full_read(fd, ptr, size);
++#ifdef TCC_ARM_THUMB
++            if (s->spill_fd)
++                spill_append(s, fd, size, offset);
++            else
++#endif
++            {
++                ptr = s->data + offset;
++                full_read(fd, ptr, size);
++            }
+         }
+ #if defined TCC_TARGET_ARM || defined TCC_TARGET_ARM64 || defined TCC_TARGET_RISCV
+         /* align code sections to instruction lenght */
+@@ -3624,9 +3844,15 @@
+         case SHT_RELX:
+             /* take relocation offset information */
+             offseti = sm_table[sh->sh_info].offset;
++#ifdef TCC_ARM_THUMB
++            {
++            SpillRelocs it = {s, offset, offset + size, 0, 0, 1};
++            while ((rel = spill_reloc_next(&it)) != NULL) {
++#else
+ 	    for (rel = (ElfW_Rel *) s->data + (offset / sizeof(*rel));
+ 		 rel < (ElfW_Rel *) s->data + ((offset + size) / sizeof(*rel));
+ 		 rel++) {
++#endif
+                 int type;
+                 unsigned sym_index;
+                 /* convert symbol index */
+@@ -3662,10 +3888,17 @@
+                    entry require to add a Thumb stub before the PLT entry to
+                    switch to ARM mode. We set bit plt_thumb_stub of the
+                    attribute of a symbol to indicate such a case. */
+-                if (type == R_ARM_THM_JUMP24)
++                if (type == R_ARM_THM_JUMP24
++#ifdef TCC_ARM_THUMB
++                    && (!s1->static_link || !text_section->spill_fd)
++#endif
++                    )
+                     get_sym_attr(s1, sym_index, 1)->plt_thumb_stub = 1;
+ #endif
+             }
++#ifdef TCC_ARM_THUMB
++            }
++#endif
+             break;
+         default:
+             break;

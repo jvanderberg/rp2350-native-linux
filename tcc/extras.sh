@@ -17,9 +17,10 @@ run() { # NAME CMD...
 	if "$@" > $W/$n.log 2>&1; then ok=$((ok + 1)); echo "OK   $n"
 	else bad=$((bad + 1)); echo "FAIL $n"; tail -5 $W/$n.log; fi
 }
-for d in games maze pulse samples httpd tm xterm mc; do
+for d in games maze pulse samples httpd tm xterm mc vim; do
 	run $d sh $d/build.sh
 done
+run vim-smoke env VIMRUNTIME="$PWD/vim/runtime" sh vim/smoke.sh qemu-arm vim/vim.bin
 run bbs sh -c 'cd bbs && tcc -DBBSDIR="\"/tmp\"" -o bbs bbs.c'
 ls -l games/stackfall games/rain games/asteroids games/life maze/maze \
 	maze/xmaze pulse/pulse pulse/xpulse samples/bogomips samples/mandel \
@@ -27,3 +28,4 @@ ls -l games/stackfall games/rain games/asteroids games/life maze/maze \
 echo "--- mandel 20:"; qemu-arm samples/mandel 20 | head -12
 echo "--- bogomips:"; timeout 20 qemu-arm samples/bogomips | head -5
 echo "extras: $ok built, $bad failed"
+[ "$bad" -eq 0 ]

@@ -18,6 +18,7 @@ those programs build with the cross tcc.
 | [`httpd/`](httpd/README.md) | A small static file server | `./build.sh && ./httpd` |
 | [`tm/`](tm/README.md) | A small tmux work-alike | `./build.sh && ./tm` |
 | [`xterm/`](xterm/README.md) | A terminal in an X11 window | `./build.sh`, see its README |
+| [`vim/`](vim/README.md) | Vim's tiny terminal build with core help | `./build.sh && ./vim filename` from the extras ZIP |
 | [`mc/`](mc/README.md) | A Midnight Commander lookalike, and `xmc`, the same in an X11 window | `./build.sh && ./mc` |
 | [`bbs/`](bbs/) | A telnet BBS with a MUD | `./bbsctl start` |
 | [`wolf3d/`](wolf3d/README.md) | Wolfenstein 3D in an X11 window | see its README |
@@ -143,3 +144,5 @@ Everything here is under the repository's MIT license, except:
   `SDL.h` and the scripts, are MIT. The game data is not included.
 - `ws2812/ws2812.pio` comes from the pico-examples (Copyright (c) 2020
   Raspberry Pi (Trading) Ltd., BSD-3-Clause).
+- `vim/` includes upstream Vim under the Vim license and an ncurses header
+  under its own license. See [the Vim README](vim/README.md).
