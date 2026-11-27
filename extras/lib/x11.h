@@ -2524,9 +2524,11 @@ static inline x_fixed x_cos(int a) { return x_sin(a + 0x4000); }
  * stays round. Returns how many. */
 static int xi_ellipse_steps(x_fixed w, x_fixed h)
 {
-    int n = (int)(((long long)(w > h ? w : h) * 3 / 4) >> 16);
+    /* counted in device pixels: at HIDPI's scale the server draws the
+     * edge that much finer, and too few points would show as corners */
+    int n = (int)(((long long)(w > h ? w : h) * 3 / 4 * xi_hidpi) >> 16);
 
-    return n < 16 ? 16 : n > 240 ? 240 : n;
+    return n < 16 ? 16 : n > 240 * xi_hidpi ? 240 * xi_hidpi : n;
 }
 
 static void xi_ellipse_pt(x_fixed x, x_fixed y, x_fixed w, x_fixed h, int i, int n, x_fixed *px,
@@ -2817,7 +2819,11 @@ static inline void x_cursor(int c)
 
     if (c < 0 || c >= X_CURSORS || c == xi_cursor_now || xi_win == 0)
         return;
-    if ((c == X_CURSOR_HAND || c == X_CURSOR_TEXT) && !xi_cursor_art_tried[c])
+    /* the smooth hand and I-beam, unless the server draws at a finer
+     * resolution (HIDPI): its own cursors are then sharper than ours, which
+     * it can only show at one pixel per X pixel */
+    if ((c == X_CURSOR_HAND || c == X_CURSOR_TEXT) && !xi_cursor_art_tried[c] &&
+        !(x_has_render() && xi_hidpi > 1))
         xi_cursor_art(c);
     xi_cursor_now = c;
     if (c != X_CURSOR_DEFAULT && xi_cursors[c] == 0) {

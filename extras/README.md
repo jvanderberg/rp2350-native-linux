@@ -92,6 +92,13 @@ board:
 # DISPLAY=SCREEN-ADDRESS:0 ./xmaze -demo
 ```
 
+Or use [crystalX](https://github.com/jvanderberg/crystalx) in place of
+XQuartz: a tabbed terminal for macOS and Wayland with an X server inside,
+needing no X installation. `ssh root@BOARD-ADDRESS` from one of its tabs
+forwards X by itself, and each program run there opens as a tab next to
+it. On a Retina screen it draws at full resolution where XQuartz
+enlarges, and `x11.h` sends its text, curves and cursors to suit.
+
 ## lib
 
 | File | What it is | Used by |
