@@ -86,20 +86,20 @@ static int temp_file(const char *target, char **name)
 }
 
 /* Scratch files go beside the file, so a big edit lands on its disk. An
- * untitled document uses $TMPDIR or /tmp. */
+ * untitled document, or one in a folder we can't write to, uses $TMPDIR or
+ * /tmp. */
 static int scratch_file(void)
 {
     char *name, base[PATH_MAX];
     const char *tmp = getenv("TMPDIR");
-    int fd;
+    int fd = -1;
 
-    if (!path) {
+    if (path)
+        fd = temp_file(path, &name);
+    if (fd < 0 && (!path || errno == EACCES || errno == EROFS || errno == EPERM)) {
         snprintf(base, sizeof base, "%s/x", tmp && *tmp ? tmp : "/tmp");
         fd = temp_file(base, &name);
-    } else {
-        fd = temp_file(path, &name);
     }
-
     if (fd < 0)
         return -1;
     if (unlink(name) < 0) {
@@ -475,6 +475,9 @@ static int same_time(struct timespec a, struct timespec b)
     return a.tv_sec == b.tv_sec && a.tv_nsec == b.tv_nsec;
 }
 
+/* Whether target is still the file we opened or last saved. Not by inode
+ * number: vfat makes a new one whenever the kernel drops the inode from its
+ * cache, nor by ctime, which vfat reloads as the mtime. */
 static int unchanged(const char *target, const struct stat *want, int present)
 {
     struct stat st;
@@ -484,18 +487,24 @@ static int unchanged(const char *target, const struct stat *want, int present)
             return 1;
         return 0;
     }
-    if (present && st.st_dev == want->st_dev && st.st_ino == want->st_ino &&
+    if (present && S_ISREG(st.st_mode) && st.st_dev == want->st_dev &&
         st.st_size == want->st_size &&
 #ifdef __APPLE__
-        same_time(st.st_mtimespec, want->st_mtimespec) &&
-        same_time(st.st_ctimespec, want->st_ctimespec))
+        same_time(st.st_mtimespec, want->st_mtimespec))
 #else
-        same_time(st.st_mtim, want->st_mtim) &&
-        same_time(st.st_ctim, want->st_ctim))
+        same_time(st.st_mtim, want->st_mtim))
 #endif
         return 1;
     errno = EBUSY;
     return 0;
+}
+
+static mode_t mask(void)
+{
+    mode_t m = umask(0);
+
+    umask(m);
+    return m;
 }
 
 static int save_to(struct root root, const char *target, const struct stat *want, int present)
@@ -518,7 +527,9 @@ static int save_to(struct root root, const char *target, const struct stat *want
         }
         pos += (off_t)len;
     }
-    if (!error && present && fchmod(fd, want->st_mode & 0777) < 0)
+    /* mkstemp made it 0600: keep the old file's mode, or give a new one
+     * what open() would */
+    if (!error && fchmod(fd, present ? want->st_mode & 0777 : 0666 & ~mask()) < 0)
         error = errno;
     if (!error && fsync(fd) < 0)
         error = errno;
@@ -557,10 +568,7 @@ int doc_save_as(struct root root, const char *name, int overwrite)
 
     if (!target)
         return -1;
-    if (path && !strcmp(path, target)) {
-        free(target);
-        return doc_save(root);
-    }
+    /* the open file too: replacing it means saving over whatever is there now */
     if (present && !overwrite) {
         free(target);
         errno = EEXIST;

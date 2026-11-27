@@ -63,8 +63,8 @@ Tabs occupy one cell, and non-ASCII and control bytes display as dots.
 The editor preserves those bytes when reading and saving.
 
 Keep large files on the SD card. xedit keeps scratch data in the file's
-directory until it exits; an untitled document keeps it in `$TMPDIR`, or
-`/tmp`. Save streams the result into a same-directory temporary file, then
+directory until it exits. An untitled document, or a file in a directory
+xedit can't write to, keeps it in `$TMPDIR`, or `/tmp`. Save streams the result into a same-directory temporary file, then
 replaces the destination after a successful write. The directory needs
 enough free space for the scratch data and the full new file during a
 save. The original file remains open for undo and may continue using disk

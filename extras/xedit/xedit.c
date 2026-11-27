@@ -41,6 +41,7 @@
 #define CHECKPOINTS 64
 #define CHECKPOINT_INTERVAL (64 * 1024)
 #define SEARCH_MAX 256
+#define LOOKBACK (2 * DOC_PAGE)  /* how far back previous() looks for a line start */
 #define DCLICK_MS 400
 #define MAX_ENTRIES 4096
 #define LIST_ROWS 60
@@ -67,6 +68,7 @@ struct line_image {
 struct snapshot {
     struct root root;
     off_t cursor, anchor;
+    off_t changed;          /* where the edit that made this state starts */
 };
 
 struct location { off_t pos; uint64_t line, col; };
@@ -214,28 +216,53 @@ static struct row row_at(off_t pos)
     return row;
 }
 
+/* The start of the row before the one at pos. Rows wrap every cols bytes
+ * from the start of their line, so find that within LOOKBACK bytes; a
+ * longer line just steps back cols bytes, as a jump into it lays out. */
 static off_t previous(off_t pos)
 {
-    char buf[COLS + 1];
-    int n = (int)min(pos, cols + 1);
-    int end = n;
+    unsigned char buf[DOC_PAGE], c;
+    off_t end = pos, at, start = -1;
 
-    if (!n || !bytes(pos - n, buf, (size_t)n))
-        return pos;
-    if (buf[end - 1] == '\n')
+    if (pos <= 0 || !bytes(pos - 1, &c, 1))
+        return max(0, pos);
+    if (c == '\n')
         end--;
-    for (int i = end - 1; i >= 0; i--)
-        if (buf[i] == '\n')
-            return pos - n + i + 1;
-    return pos - n + max(0, end - cols);
+    for (at = end; at > 0 && end - at < LOOKBACK && start < 0; ) {
+        size_t n = (size_t)min(at, sizeof buf);
+
+        if (!bytes(at - (off_t)n, buf, n))
+            return pos;
+        for (size_t i = n; i-- > 0;)
+            if (buf[i] == '\n') {
+                start = at - (off_t)n + (off_t)i + 1;
+                break;
+            }
+        at -= (off_t)n;
+    }
+    if (start < 0 && at == 0)
+        start = 0;
+    if (start < 0)
+        return max(0, end - cols);
+    if (end == start)
+        return start;
+    return start + (end - start - 1) / cols * cols;
 }
 
-/* The start of the row holding pos, near enough for the scroll bar. */
+/* The start of the row holding pos. */
 static off_t row_start(off_t pos)
 {
+    unsigned char c;
+
     if (pos <= 0)
         return 0;
-    return previous(min(doc.root.size, pos + 1));
+    if (pos >= doc.root.size) {
+        pos = doc.root.size;
+        if (bytes(pos - 1, &c, 1) && c == '\n')
+            return pos;
+        return previous(pos);
+    }
+    return previous(pos + 1);
 }
 
 static void layout(void)
@@ -273,7 +300,7 @@ static void reveal(void)
     top = min(top, doc.root.size);
     if (cursor_row() >= 0)
         return;
-    off_t start = doc.cursor;
+    off_t start = row_start(doc.cursor);
     int back = doc.cursor < top ? 1 : rows - 1;
 
     while (back-- > 0 && start)
@@ -308,6 +335,7 @@ static int replace(off_t start, off_t end, const void *data, size_t len)
     push(undo, &nundo, doc);
     nredo = 0;
     doc.root = edited;
+    doc.changed = start;
     invalidate_position(start);
     doc.cursor = doc.anchor = start + (off_t)len;
     preferred = -1;
@@ -332,16 +360,21 @@ static void move_to(off_t pos, int extend)
 
 static void history_step(int back)
 {
+    off_t changed;
+
     if (back ? !nundo : !nredo)
         return;
     if (back) {
+        changed = doc.changed;
         push(redo, &nredo, doc);
         doc = undo[--nundo];
     } else {
         push(undo, &nundo, doc);
         doc = redo[--nredo];
+        changed = doc.changed;
     }
-    invalidate_position(0);
+    /* line numbers before the edit still hold */
+    invalidate_position(changed);
     top = min(top, doc.root.size);
     layout();
     reveal();
@@ -2126,18 +2159,43 @@ static int find_range(const char *pat, size_t len, off_t start, off_t limit, off
     return 0;
 }
 
-/* The last match in [from, limit). */
+/* The last match in [from, limit): the same search run backwards from
+ * limit with the pattern reversed, so it reads only back to that match. */
 static int find_last(const char *pat, size_t len, off_t from, off_t limit, off_t *match)
 {
-    off_t m;
-    int r, found = 0;
+    unsigned char buf[DOC_PAGE];
+    size_t prefix[SEARCH_MAX], matched = 0;
+#define RPAT(i) fold((unsigned char)pat[len - 1 - (i)])
 
-    while ((r = find_range(pat, len, from, limit, &m)) > 0) {
-        *match = m;
-        found = 1;
-        from = m + 1;
+    prefix[0] = 0;
+    for (size_t i = 1, j = 0; i < len; i++) {
+        while (j && RPAT(i) != RPAT(j))
+            j = prefix[j - 1];
+        if (RPAT(i) == RPAT(j))
+            j++;
+        prefix[i] = j;
     }
-    return r < 0 ? -1 : found;
+    while (limit > from) {
+        size_t n = (size_t)min(limit - from, sizeof buf);
+
+        if (!bytes(limit - (off_t)n, buf, n))
+            return -1;
+        for (size_t i = n; i-- > 0;) {
+            int c = fold(buf[i]);
+
+            while (matched && c != RPAT(matched))
+                matched = prefix[matched - 1];
+            if (c == RPAT(matched))
+                matched++;
+            if (matched == len) {
+                *match = limit - (off_t)n + (off_t)i;
+                return 1;
+            }
+        }
+        limit -= (off_t)n;
+    }
+    return 0;
+#undef RPAT
 }
 
 static void fbar_open(int with_replace)
@@ -2233,7 +2291,7 @@ static void replace_all(void)
     const char *pat = fbar.find.s, *with = fbar.repl.s;
     size_t len = strlen(pat), wlen = strlen(with);
     struct snapshot before = doc;
-    off_t pos = 0, m;
+    off_t pos = 0, m, first = -1;
     long count = 0;
 
     if (!len)
@@ -2246,13 +2304,16 @@ static void replace_all(void)
             report("Replace failed");
             break;
         }
+        if (first < 0)
+            first = m;
         pos = m + (off_t)wlen;
         count++;
     }
     if (count) {
         push(undo, &nundo, before);
         nredo = 0;
-        invalidate_position(0);
+        doc.changed = first;
+        invalidate_position(first);
         doc.cursor = doc.anchor = min(doc.cursor, doc.root.size);
         top = min(top, doc.root.size);
         layout();
@@ -2794,8 +2855,13 @@ static void editor_key(int k, int mods)
     case X_KEY_HOME: case X_KEY_END:
         reveal();
         i = cursor_row();
-        if (i >= 0)
-            move_to(view[i].start + (k == X_KEY_HOME ? 0 : view[i].len), extend);
+        if (i >= 0) {
+            const struct row *r = &view[i];
+            /* a wrapped row's end is the next row's start: stop before it */
+            int end = r->len - (!r->newline && r->next < doc.root.size && r->len > 0);
+
+            move_to(r->start + (k == X_KEY_HOME ? 0 : end), extend);
+        }
         return;
     case X_KEY_BACKSPACE: case X_KEY_DELETE:
         if (doc.cursor != doc.anchor)
@@ -3031,8 +3097,11 @@ int main(int argc, char **argv)
     if (argc > 1 && !strcmp(argv[1], "--")) {
         argc--;
         argv++;
+    } else if (argc > 1 && argv[1][0] == '-' && argv[1][1]) {
+        fprintf(stderr, "usage: xedit [--] [FILE]\n");
+        return 2;
     }
-    if (argc > 2 || (argc == 2 && argv[1][0] == '-' && argv[1][1])) {
+    if (argc > 2) {
         fprintf(stderr, "usage: xedit [--] [FILE]\n");
         return 2;
     }
