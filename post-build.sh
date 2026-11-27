@@ -100,6 +100,10 @@ sed -i -e 's|^\(tmpfs[[:space:]]*/tmp[[:space:]]*tmpfs[[:space:]]*\)mode=1777\(,
   -e 's|^\(tmpfs[[:space:]]*/run[[:space:]]*tmpfs[[:space:]]*\)mode=0755\(,size=[0-9a-z%]*\)*|\1mode=0755,size=256k|' \
   -e 's|^\(tmpfs[[:space:]]*/dev/shm[[:space:]]*tmpfs[[:space:]]*\)mode=1777\(,size=[0-9a-z%]*\)*|\1mode=1777,size=256k|' "$1/etc/fstab"
 grep -q 'size=512k' "$1/etc/fstab" || { echo "post-build: /tmp size not set in fstab" >&2; exit 1; }
+# TrueType fonts for X programs (x11.h's x_font_ttf): DejaVu Sans and
+# DejaVu Sans Mono, regular and bold, cut down by tools/subset-fonts.sh
+mkdir -p "$1/usr/share/fonts/dejavu"
+cp /native/fonts/*.ttf /native/fonts/LICENSE "$1/usr/share/fonts/dejavu/"
 # local testing: anything under out/overlay (not in git) is
 # copied into the root filesystem as it is
 if [ -d /native/out/overlay ]; then cp -a /native/out/overlay/. "$1"/; fi

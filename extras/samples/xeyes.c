@@ -5,6 +5,9 @@
  * Build:  cc -o xeyes xeyes.c
  * Run:    DISPLAY=HOST:0 ./xeyes     (see x11.h for letting the board in)
  * Keys:   q or Escape quits, as does closing the window.
+ *
+ * With the X server's RENDER extension the eyes are drawn smooth, the
+ * pupils placed to a fraction of a pixel; without it, as plain ellipses.
  */
 #include "../lib/x11.h"
 
@@ -26,9 +29,13 @@ static unsigned long long isqrt(unsigned long long v)
     return r;
 }
 
-static void oval(int cx, int cy, int rx, int ry)
+static int smooth;                      /* the server has RENDER */
+
+/* An ellipse centred on (cx, cy), in 16.16 fixed point. */
+static void oval(x_fixed cx, x_fixed cy, x_fixed rx, x_fixed ry)
 {
-    x_fill_ellipse(cx - rx, cy - ry, 2 * rx, 2 * ry);
+    if (!smooth || !x_aa_fill_ellipse(cx - rx, cy - ry, 2 * rx, 2 * ry, 255))
+        x_fill_ellipse((cx - rx) >> 16, (cy - ry) >> 16, (2 * rx) >> 16, (2 * ry) >> 16);
 }
 
 /* One eye centred on (cx, cy), looking at the mouse at (mx, my). */
@@ -40,11 +47,12 @@ static void eye(int cx, int cy, int rx, int ry, int mx, int my)
     long long ax = rx - t - pr - 1, ay = ry - t - pr - 1;
     long long dx = mx - cx, dy = my - cy;
     unsigned long long lhs, lim;
+    x_fixed px, py;
 
     x_color(x_rgb(0, 0, 0));
-    oval(cx, cy, rx, ry);
+    oval(X_FX(cx), X_FX(cy), X_FX(rx), X_FX(ry));
     x_color(x_rgb(255, 255, 255));
-    oval(cx, cy, rx - t, ry - t);
+    oval(X_FX(cx), X_FX(cy), X_FX(rx - t), X_FX(ry - t));
     if (ax < 0)
         ax = 0;
     if (ay < 0)
@@ -52,14 +60,16 @@ static void eye(int cx, int cy, int rx, int ry, int mx, int my)
     /* keep the pupil inside: (dx/ax)^2 + (dy/ay)^2 <= 1 */
     lhs = (unsigned long long)(dx * dx * ay * ay + dy * dy * ax * ax);
     lim = (unsigned long long)(ax * ax * ay * ay);
-    if (lhs > lim) {
+    px = X_FX(cx + dx);
+    py = X_FX(cy + dy);
+    if (lhs > lim) {                    /* on the edge, towards the mouse */
         long long s = (long long)isqrt(lim), d = (long long)isqrt(lhs);
 
-        dx = d ? dx * s / d : 0;
-        dy = d ? dy * s / d : 0;
+        px = X_FX(cx) + (x_fixed)(d ? (dx << 16) * s / d : 0);
+        py = X_FX(cy) + (x_fixed)(d ? (dy << 16) * s / d : 0);
     }
     x_color(x_rgb(0, 0, 0));
-    oval(cx + (int)dx, cy + (int)dy, pr, pr);
+    oval(px, py, X_FX(pr), X_FX(pr));
 }
 
 int main(int argc, char **argv)
@@ -69,6 +79,7 @@ int main(int argc, char **argv)
     if (x_open(argc > 1 ? argv[1] : NULL) < 0)
         return 1;
     x_window("xeyes", 320, 200);
+    smooth = x_has_render();
     for (;;) {
         struct x_event e;
         int rx = x_width / 4 - 4, ry = x_height / 2 - 4;
