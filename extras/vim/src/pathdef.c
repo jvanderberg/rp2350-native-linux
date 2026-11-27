@@ -1,4 +1,4 @@
-/* Build paths for the RP2350 extras package. The launcher sets VIMRUNTIME. */
+/* Fallback build paths for the RP2350 extras package. */
 #include "vim.h"
 
 char_u *default_vim_dir = (char_u *)"/usr/share/vim";

@@ -40,7 +40,7 @@ if [ -n "$objects" ]; then
     echo "built objects in $objects"
     exit 0
 fi
-echo "  LD vim.bin"
-TCC_LINK_SCRATCH="$build" $CC $CFLAGS -o "$build/vim.bin" "$@" -lncursesw -lm
-mv -f "$build/vim.bin" ../vim.bin
-echo "built vim.bin"
+echo "  LD vim"
+TCC_LINK_SCRATCH="$build" $CC $CFLAGS -o "$build/vim" "$@" -lncursesw -lm
+mv -f "$build/vim" ../vim
+echo "built vim"
