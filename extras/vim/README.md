@@ -7,7 +7,8 @@ and the plugin and filetype runtime. Searches and substitutions use Vim's
 backtracking engine. The NFA engine is omitted.
 
 Copy this directory from the release extras ZIP to the board's SD card.
-Use the `./vim` launcher to run the included binary with its runtime files.
+Run the included `./vim` executable. It finds `runtime/` beside itself,
+and you can override that path with `VIMRUNTIME`.
 
 ```sh
 cd /mnt/sd/extras/vim
@@ -35,10 +36,11 @@ the [project toolchains](../../README.md) built, run:
 
 ```sh
 tcc/run-host.sh sh /native/tcc/extras.sh
-tcc/run-host.sh cat /work/tcc-extras/src/vim/vim.bin > extras/vim/vim.bin
+tcc/run-host.sh cat /work/tcc-extras/src/vim/vim > extras/vim/vim
+chmod +x extras/vim/vim
 ```
 
-Copy the directory with the resulting `vim.bin` to the SD card and run it
+Copy the directory with the resulting `vim` to the SD card and run it
 with `./vim`.
 
 ## Source and license

@@ -20,7 +20,7 @@ run() { # NAME CMD...
 for d in games maze pulse samples httpd tm xterm mc vim; do
 	run $d sh $d/build.sh
 done
-run vim-smoke env VIMRUNTIME="$PWD/vim/runtime" sh vim/smoke.sh qemu-arm vim/vim.bin
+run vim-smoke sh vim/smoke.sh qemu-arm vim/vim
 run bbs sh -c 'cd bbs && tcc -DBBSDIR="\"/tmp\"" -o bbs bbs.c'
 ls -l games/stackfall games/rain games/asteroids games/life maze/maze \
 	maze/xmaze pulse/pulse pulse/xpulse samples/bogomips samples/mandel \

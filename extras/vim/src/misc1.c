@@ -1859,11 +1859,36 @@ vim_getenv(char_u *name, int *mustfree)
     if (!vimruntime && STRCMP(name, "VIM") != 0)
 	return NULL;
 
+#ifdef PROC_EXE_LINK
+    if (vimruntime)
+    {
+	// The SD-card package keeps its runtime beside the executable.
+	static const char runtime[] = "runtime";
+	char_u path[MAXPATHL];
+	ssize_t len = readlink(PROC_EXE_LINK, (char *)path, sizeof(path));
+
+	if (len > 0 && (size_t)len < sizeof(path))
+	{
+	    path[len] = NUL;
+	    pend = gettail(path);
+	    if (pend != path && sizeof(path) - (pend - path) >= sizeof(runtime))
+	    {
+		STRCPY(pend, runtime);
+		if (mch_isdir(path))
+		{
+		    p = vim_strsave(path);
+		    *mustfree = p != NULL;
+		}
+	    }
+	}
+    }
+#endif
+
     /*
      * When expanding $VIMRUNTIME fails, try using $VIM/vim<version> or $VIM.
      * Don't do this when default_vimruntime_dir is non-empty.
      */
-    if (vimruntime
+    if (p == NULL && vimruntime
 #ifdef HAVE_PATHDEF
 	    && *default_vimruntime_dir == NUL
 #endif

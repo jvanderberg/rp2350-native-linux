@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+unset VIM VIMRUNTIME
 if [ "$#" -eq 0 ]; then
     set -- "$(dirname "$0")/vim"
 fi
