@@ -7,13 +7,14 @@
  * Link with vt.c, sb.c, lz.c and vtutil.c.
  *
  *   struct term t;
- *   term_init(&t, 13);                  fonts (13 px) and colours
+ *   term_init(&t, 0);                   fonts (0: the usual size) and colours
  *   term_place(&t, x, y, w, h);         where it goes (again on a resize)
  *   term_start(&t, dir, argv);          run argv (NULL: a login shell)
  *   ... poll term_fd(&t) with the X connection; when it's readable:
  *   term_pump(&t);                      read the output; t.running drops
  *                                       to 0 when the program has gone
  *   term_key(&t, &e); term_mouse(&t, &e);
+ *   term_paste(&t, e.text, e.len);      an XE_PASTE event
  *   term_draw(&t);                      send what changed, then x_present
  *   term_free(&t);                      hang up and free (term_start may
  *                                       use it again)
@@ -25,6 +26,10 @@
  * wheel scrolls back through history unless the program asked for the
  * mouse (or, on the alternate screen, as less and man use, it is arrow
  * keys); Shift goes to the history always.
+ *
+ * Dragging with the left button selects text (with Shift, too, when the
+ * program has the mouse) and copies it; the middle button, Shift-Insert
+ * and Ctrl-Shift-V paste, Ctrl-Shift-C copies the selection again.
  *
  * Only what changed is sent: the cells that differ from the last frame,
  * as runs of one colour; when the text scrolls, one copy on the server
@@ -60,6 +65,14 @@ struct term {
 
     int view;                           /* lines scrolled back into history */
     int held;                           /* mouse button down, for reports */
+
+    /* the selection, from (sel_l0, sel_c0) to (sel_l1, sel_c1) inclusive:
+     * lines counted from the oldest in the history, so that the screen's
+     * top row is line sb_count(), and the text keeps its place as it
+     * scrolls */
+    int sel_on, sel_drag, sel_c0, sel_c1;
+    long sel_l0, sel_l1;
+    struct cell *selrow;
 
     /* what the window shows, to send only what changes */
     struct cell *shown, *tmp;
@@ -98,9 +111,10 @@ static inline void term_colors(const struct term *t, const struct cell *c, unsig
         *fg = *bg;
 }
 
-/* Fonts (the first of misc-fixed, DejaVu Sans Mono and Lucida Typewriter
- * the server has, at px pixels) and colours (xpulse's dark theme; set
- * t->bg, fg and cursor after this to change them). */
+/* Fonts and colours (xpulse's dark theme; set t->bg, fg and cursor after
+ * this to change them). The font is DejaVu Sans Mono, anti-aliased, where
+ * the X server has RENDER (12 px if px is 0); else the first of misc-fixed,
+ * DejaVu Sans Mono and Lucida Typewriter that the server has (13 px). */
 static inline void term_init(struct term *t, int px)
 {
     static const char *const fams[][2] = {
@@ -132,6 +146,12 @@ static inline void term_init(struct term *t, int px)
     t->fg = x_rgb(230, 237, 243);
     t->cursor = x_rgb(88, 166, 255);
 
+    if ((t->f_norm = x_font_ttf("DejaVuSansMono.ttf", px > 0 ? px : 12)) != 0) {
+        t->unicode = 1;
+        t->f_bold = x_font_ttf("DejaVuSansMono-Bold.ttf", px > 0 ? px : 12);
+    }
+    if (px <= 0)
+        px = 13;
     for (size_t i = 0; i < sizeof fams / sizeof fams[0] && !t->f_norm; i++) {
         snprintf(name, sizeof name, fams[i][0], px);
         t->f_norm = x_font_cell(name);
@@ -222,12 +242,14 @@ static inline void term_forget(struct term *t)
     free(t->shown_hash);
     free(t->hash);
     free(t->tmp);
+    free(t->selrow);
     t->shown_rows = t->vt.rows;
     t->shown_cols = t->vt.cols;
     t->shown = term_alloc((size_t)n * sizeof *t->shown);
     t->shown_hash = term_alloc((size_t)t->vt.rows * sizeof *t->shown_hash);
     t->hash = term_alloc((size_t)t->vt.rows * sizeof *t->hash);
     t->tmp = term_alloc((size_t)(t->vt.cols + 1) * sizeof *t->tmp);
+    t->selrow = term_alloc((size_t)(t->vt.cols + 1) * sizeof *t->selrow);
     for (int i = 0; i < n; i++)
         t->shown[i].attr = 0xffffffffu;     /* matches nothing */
     t->shown_cx = t->shown_cy = -1;
@@ -253,6 +275,7 @@ static inline void term_place(struct term *t, int x, int y, int w, int h)
         term_winsize(t);
     }
     t->view = 0;
+    t->sel_on = t->sel_drag = 0;        /* the lines are rewrapped */
     term_forget(t);
 }
 
@@ -447,6 +470,35 @@ static inline const struct cell *term_row(struct term *t, int r)
     return vt_cell(&t->vt, r, 0);
 }
 
+/* The selection in order: from line *l0, column *c0, to *l1, *c1. */
+static inline void term_sel_range(const struct term *t, long *l0, int *c0, long *l1, int *c1)
+{
+    int swap = t->sel_l1 < t->sel_l0 || (t->sel_l1 == t->sel_l0 && t->sel_c1 < t->sel_c0);
+
+    *l0 = swap ? t->sel_l1 : t->sel_l0;
+    *c0 = swap ? t->sel_c1 : t->sel_c0;
+    *l1 = swap ? t->sel_l0 : t->sel_l1;
+    *c1 = swap ? t->sel_c0 : t->sel_c1;
+}
+
+/* Screen row r as term_row has it, with the selected cells reversed. */
+static inline const struct cell *term_row_sel(struct term *t, int r)
+{
+    const struct cell *c = term_row(t, r);
+    long line = sb_count(&t->vt.sb) - t->view + r, l0, l1;
+    int c0, c1, cols = t->vt.cols;
+
+    if (!t->sel_on || t->selrow == NULL)
+        return c;
+    term_sel_range(t, &l0, &c0, &l1, &c1);
+    if (line < l0 || line > l1)
+        return c;
+    memcpy(t->selrow, c, (size_t)cols * sizeof *c);
+    for (int x = line == l0 ? c0 : 0; x <= (line == l1 ? c1 : cols - 1) && x < cols; x++)
+        t->selrow[x].attr ^= (uint32_t)AT_REVERSE << 18;
+    return t->selrow;
+}
+
 /* Draw cells [x0, x1) of row y; cx is the cursor's column, or -1. */
 static inline void term_draw_run(struct term *t, int y, const struct cell *c, int x0, int x1, int cx)
 {
@@ -527,7 +579,7 @@ static inline void term_draw(struct term *t)
 
     /* Has the text moved up by k lines? Then move what's on screen first. */
     for (int r = 0; r < rows; r++)
-        t->hash[r] = term_row_hash(term_row(t, r), cols);
+        t->hash[r] = term_row_hash(term_row_sel(t, r), cols);
     for (int k = 1; k < rows - 1; k++) {
         int same = 0, need = rows - k;
 
@@ -559,7 +611,7 @@ static inline void term_draw(struct term *t)
 
         if (t->hash[r] == t->shown_hash[r] && r != cy && r != t->shown_cy)
             continue;
-        c = term_row(t, r);
+        c = term_row_sel(t, r);
         for (int x = 0; x < cols; x++)
             if (c[x].ch != s[x].ch || c[x].attr != s[x].attr || (r == cy && x == cx)) {
                 if (x0 < 0)
@@ -613,6 +665,94 @@ static inline int term_scroll(struct term *t, int d)
     return t->view != old;
 }
 
+/* ---------- the clipboard ---------- */
+
+/* The selected text as UTF-8, lines ending in \n, trailing blanks dropped:
+ * on the clipboard. */
+static inline void term_copy(struct term *t)
+{
+    long n = sb_count(&t->vt.sb), l0, l1;
+    int c0, c1, cols = t->vt.cols;
+    size_t len = 0, cap;
+    char *out;
+    struct cell *row;
+
+    if (!t->started || !t->sel_on)
+        return;
+    term_sel_range(t, &l0, &c0, &l1, &c1);
+    if (l1 - l0 > 5000)
+        l0 = l1 - 5000;                 /* enough */
+    cap = (size_t)(l1 - l0 + 1) * ((size_t)cols * 4 + 1) + 1;
+    out = term_alloc(cap);
+    row = term_alloc((size_t)(cols + 1) * sizeof *row);
+    for (long l = l0; l <= l1; l++) {
+        int from = l == l0 ? c0 : 0, to = l == l1 ? c1 : cols - 1, end;
+
+        if (l < n) {
+            if (!sb_get(&t->vt.sb, l, row, cols))
+                for (int x = 0; x < cols; x++)
+                    row[x].ch = ' ', row[x].attr = ATTR_DEFAULT;
+        } else if (l - n < t->vt.rows) {
+            memcpy(row, vt_cell(&t->vt, (int)(l - n), 0), (size_t)cols * sizeof *row);
+        } else {
+            break;
+        }
+        if (to >= cols)
+            to = cols - 1;
+        for (end = to; end >= from && (row[end].ch == 0 || row[end].ch == ' '); end--)
+            ;
+        for (int x = from; x <= end; x++) {
+            uint32_t ch = row[x].ch ? row[x].ch : ' ';
+
+            if (row[x].attr & CELL_CONT)
+                continue;
+            if (ch < 0x80) {
+                out[len++] = (char)ch;
+            } else if (ch < 0x800) {
+                out[len++] = (char)(0xc0 | ch >> 6);
+                out[len++] = (char)(0x80 | (ch & 0x3f));
+            } else if (ch < 0x10000) {
+                out[len++] = (char)(0xe0 | ch >> 12);
+                out[len++] = (char)(0x80 | (ch >> 6 & 0x3f));
+                out[len++] = (char)(0x80 | (ch & 0x3f));
+            } else {
+                out[len++] = (char)(0xf0 | ch >> 18);
+                out[len++] = (char)(0x80 | (ch >> 12 & 0x3f));
+                out[len++] = (char)(0x80 | (ch >> 6 & 0x3f));
+                out[len++] = (char)(0x80 | (ch & 0x3f));
+            }
+        }
+        if (l < l1)
+            out[len++] = '\n';
+    }
+    x_set_clipboard(out, len);
+    free(row);
+    free(out);
+}
+
+/* Pasted text, typed into the program: newlines as Return, and marked as
+ * a paste if the program asked for that (bracketed paste). */
+static inline void term_paste(struct term *t, const char *s, int n)
+{
+    if (!t->running || s == NULL || n <= 0)
+        return;
+    if (t->vt.bracketed_paste)
+        term_send(t, "\033[200~");
+    for (int i = 0; i < n; i++) {
+        int j = i;
+
+        while (j < n && s[j] != '\n')
+            j++;
+        term_reply(t, s + i, (size_t)(j - i));
+        if (j < n)
+            term_send(t, "\r");
+        i = j;
+    }
+    if (t->vt.bracketed_paste)
+        term_send(t, "\033[201~");
+    t->view = 0;
+}
+
 /* A key, as screen-256color's terminfo says it arrives. Returns whether
  * the view moved (Shift-PgUp/PgDn scroll the history). */
 static inline int term_key(struct term *t, const struct x_event *e)
@@ -624,6 +764,15 @@ static inline int term_key(struct term *t, const struct x_event *e)
 
     if ((m & X_MOD_SHIFT) && (k == X_KEY_PAGE_UP || k == X_KEY_PAGE_DOWN))
         return term_scroll(t, (k == X_KEY_PAGE_UP ? 1 : -1) * (t->vt.rows - 1));
+    if (((m & X_MOD_SHIFT) && k == X_KEY_INSERT) ||
+        ((m & (X_MOD_CTRL | X_MOD_SHIFT)) == (X_MOD_CTRL | X_MOD_SHIFT) && (k == 'V' || k == 'v'))) {
+        x_request_paste();              /* it comes back as XE_PASTE */
+        return 0;
+    }
+    if ((m & (X_MOD_CTRL | X_MOD_SHIFT)) == (X_MOD_CTRL | X_MOD_SHIFT) && (k == 'C' || k == 'c')) {
+        term_copy(t);
+        return 0;
+    }
     if (!t->running)
         return 0;
     switch (k) {
@@ -718,11 +867,66 @@ static inline void term_mouse_report(struct term *t, int b, int x, int y, int re
     term_send(t, s);
 }
 
+/* The cell under window position (x, y): its line (as the selection
+ * counts them) and column. */
+static inline void term_cell_at(const struct term *t, int x, int y, long *line, int *col)
+{
+    int c = (x - t->x) / t->cw, r = (y - t->y) / t->ch;
+
+    if (x < t->x)
+        c = 0;
+    if (y < t->y)
+        r = 0;
+    if (c >= t->vt.cols)
+        c = t->vt.cols - 1;
+    if (r >= t->vt.rows)
+        r = t->vt.rows - 1;
+    *line = sb_count(&t->vt.sb) - t->view + r;
+    *col = c;
+}
+
 /* A button or motion event (in window coordinates). Returns whether the
- * view moved. */
+ * view moved, or the selection changed (draw again). */
 static inline int term_mouse(struct term *t, const struct x_event *e)
 {
     int b, app = t->running && t->vt.mouse && !(e->mods & X_MOD_SHIFT);
+
+    if (!t->started)
+        return 0;
+    /* selecting: the left button, where the program doesn't take the mouse */
+    if (!app && ((e->type == XE_BUTTON_DOWN && e->button == 1) ||
+                 (e->type == XE_MOTION && t->sel_drag) ||
+                 (e->type == XE_BUTTON_UP && e->button == 1 && t->sel_drag))) {
+        long line;
+        int col, was = t->sel_on;
+
+        term_cell_at(t, e->x, e->y, &line, &col);
+        if (e->type == XE_BUTTON_DOWN) {
+            t->sel_drag = 1;
+            t->sel_on = 0;
+            t->sel_l0 = t->sel_l1 = line;
+            t->sel_c0 = t->sel_c1 = col;
+            return was;
+        }
+        if (line != t->sel_l1 || col != t->sel_c1 || !t->sel_on) {
+            t->sel_l1 = line;
+            t->sel_c1 = col;
+            t->sel_on = t->sel_l1 != t->sel_l0 || t->sel_c1 != t->sel_c0;
+            if (e->type != XE_BUTTON_UP)
+                return 1;
+        }
+        if (e->type == XE_BUTTON_UP) {
+            t->sel_drag = 0;
+            if (t->sel_on)
+                term_copy(t);
+            return 1;
+        }
+        return 0;
+    }
+    if (!app && e->type == XE_BUTTON_DOWN && e->button == 2) {
+        x_request_paste();              /* the middle button pastes */
+        return 0;
+    }
 
     if (e->type == XE_BUTTON_DOWN && (e->button == 4 || e->button == 5) && !app) {
         if (t->running && t->vt.g == &t->vt.alt && !(e->mods & X_MOD_SHIFT)) {
@@ -775,7 +979,9 @@ static inline void term_free(struct term *t)
     free(t->shown_hash);
     free(t->hash);
     free(t->tmp);
-    t->shown = t->tmp = NULL;
+    free(t->selrow);
+    t->shown = t->tmp = t->selrow = NULL;
+    t->sel_on = t->sel_drag = 0;
     t->shown_hash = t->hash = NULL;
     t->started = 0;
 }
