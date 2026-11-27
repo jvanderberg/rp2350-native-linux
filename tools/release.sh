@@ -6,7 +6,7 @@
 #       drag-and-drop onto the board's BOOTSEL drive (tools/mkuf2.py); it
 #       leaves /home and the board config as they are
 #   rp2350-extras-VERSION.zip         extras/ with its programs built by
-#       the ATRANS gcc at -O2 (tools/extras-gcc.sh)
+#       the ATRANS gcc (tools/extras-gcc.sh)
 #   SHA256SUMS
 # VERSION defaults to `git describe --tags --always --dirty`.
 # The GitHub workflow (.github/workflows/release.yml) runs this.

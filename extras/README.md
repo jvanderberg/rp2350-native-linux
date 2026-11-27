@@ -2,11 +2,12 @@
 
 Programs for the board: terminal games and demos, X11 programs, a telnet
 BBS, a Midnight Commander lookalike, a terminal multiplexer, a terminal in
-an X11 window, Wolfenstein 3D and a WS2812 LED driver.
+an X11 window, Wolfenstein 3D, a WS2812 LED driver, and ZIP archive tools.
 
-They aren't in the image. Copy the sources to the board and build them
-there with `cc` (tcc), using the commands below. On the host,
-`tcc/extras.sh` checks that they build with the cross tcc.
+The extras are available in the separate release bundle. You can also
+copy most programs' sources to the board and build them there with `cc`
+(tcc), using the commands below. On the host, `tcc/extras.sh` checks that
+those programs build with the cross tcc.
 
 | Directory | What it is | Build on the board and run |
 |---|---|---|
@@ -21,6 +22,7 @@ there with `cc` (tcc), using the commands below. On the host,
 | [`bbs/`](bbs/) | A telnet BBS with a MUD | `./bbsctl start` |
 | [`wolf3d/`](wolf3d/README.md) | Wolfenstein 3D in an X11 window | see its README |
 | [`ws2812/`](ws2812/) | WS2812 LEDs driven by PIO | `./build.sh`, see below |
+| `zip/` | Create, list, test and extract ZIP archives | Prebuilt in the release bundle |
 | [`lib/`](lib/) | Code the others share (below) | |
 
 In the examples, lines starting with `#` are in the board's shell, and
@@ -112,10 +114,30 @@ The same program as `ws2812` in `/usr/share/examples/pio`. `build.sh` runs
 # ./ws2812 PIN COUNT RRGGBB
 ```
 
+## zip and unzip
+
+Unpack the extras release on your host and copy the `extras` directory to
+the SD card. On the board, add the tools to your shell's path and run them
+from a writable directory:
+
+```sh
+export PATH="/mnt/sd/extras/zip:$PATH"
+cd /mnt/sd
+zip -r backup.zip mydir
+unzip -l backup.zip
+unzip backup.zip -d restored
+```
+
+The release cross-builds Info-ZIP Zip 3.0 and UnZip 6.0 with the ATRANS
+toolchain using the pinned Buildroot recipes. The release includes their
+source archives and the Buildroot patches under `extras/zip/source/`.
+
 ## Licenses
 
 Everything here is under the repository's MIT license, except:
 
+- `zip/` in the release bundle contains Zip and UnZip under the Info-ZIP
+  license. See `LICENSE` in each source archive.
 - `wolf3d/` is a port of Wolf4SDL, under the GNU GPL version 2 (see its
   `PROVENANCE` and `LICENSE-GPL-2.0`); its own additions, `xwolf.c`,
   `SDL.h` and the scripts, are MIT. The game data is not included.

@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # extras-gcc.sh ZIP: in the build container (tools/release.sh), after
-# build-all.sh: build the extras/ programs with the ATRANS gcc at -O2, the
-# compiler the userland's programs are built with, and zip the extras tree
-# with them (sources, data files and binaries, laid out as in the repo, so
-# a program can still be rebuilt on the board with tcc).
+# build-all.sh: build the extras/ programs with ATRANS gcc and bundle their
+# sources, data files and binaries.
 # Needs the ATRANS toolchain (atrans/run-build.sh) and, for ws2812, the
 # pins build's pioasm and ATRANS libpio (pins/run-build.sh).
 # bbs isn't built: bbsctl builds it on the board, for the directory it is
 # in (BBSDIR).
 set -euo pipefail
 ZIP=$1
-A=/work/atrans-br/host/bin
+BR=/work/atrans-br
+A=$BR/host/bin
 PIO=/out/pins-root/usr/lib/atrans
 [ -x $A/atrans-gcc ] || { echo "extras-gcc: no ATRANS gcc ($A); run atrans/run-build.sh" >&2; exit 1; }
 [ -x /work/pins-host/pioasm ] && [ -f $PIO/lib/libpio.a ] ||
@@ -29,6 +28,18 @@ done
 # wolf3d defines its own bool and false, which C23 (gcc 15's default) has
 CC="atrans-gcc -O2 -std=gnu17" sh wolf3d/build.sh
 CC="atrans-gcc -O2 -Wall -I$PIO/include -L$PIO/lib" sh ws2812/build.sh
+
+# Reuse the pinned Buildroot recipes and patches for Info-ZIP. The build
+# targets stop before installing the tools into Buildroot's rootfs tree.
+BR2_DL_DIR=/work/dl make -C "$BR" -j"$(nproc)" zip-build unzip-build
+install -D "$BR/build/zip-3.0/zip" zip/zip
+install -D "$BR/build/unzip-6.0/unzip" zip/unzip
+mkdir -p zip/source/{zip,unzip}
+cp /work/dl/zip/zip30.tar.gz zip/source/zip/
+cp /work/dl/unzip/unzip_6.0.orig.tar.gz zip/source/unzip/
+for package in zip unzip; do
+	cp /work/atrans-buildroot/package/"$package"/*.patch "zip/source/$package/"
+done
 
 # the binaries: every ELF file in the tree
 mapfile -t bins < <(find . -type f -print0 | xargs -0 python3 -c '

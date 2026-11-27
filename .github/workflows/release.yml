@@ -78,7 +78,7 @@ jobs:
           v=${{ steps.v.outputs.version }}
           cat > notes.md <<EOF
           - **rp2350-native-linux-$v.uf2**: the boot stub, kernel, device tree and root file system. Hold BOOTSEL while plugging the board in and copy this onto the RP2350 drive. It leaves /home and the board config (the setup screen's settings) as they are.
-          - **rp2350-extras-$v.zip**: \`extras/\` with its programs built by the userland's gcc at -O2 (bbs is built by \`bbsctl\` on the board).
+          - **rp2350-extras-$v.zip**: \`extras/\` with its programs built by the userland's gcc (bbs is built by \`bbsctl\` on the board).
           - **SHA256SUMS**
           EOF
           gh release create "$v" out/release/* --title "$v" --notes-file notes.md --verify-tag
