@@ -71,9 +71,9 @@ fi
 
 # reboot [config] [OPTION]...: BusyBox's reboot; "config" first asks the boot
 # stub for its setup screen on the next boot (/proc/rp2350/next_boot,
-# linux/mach-rp2350/board.c). Replaces the applet link.
-reboot_bb=/bin/busybox
-[ -x "$T/usr/bin/busybox-atrans" ] && reboot_bb=/usr/bin/busybox-atrans
+# linux/mach-rp2350/board.c). Replaces the applet link. busybox-atrans has
+# no reboot applet (atrans/busybox-atrans.config), so its shell runs this
+# script; the FDPIC busybox's applet does the reboot.
 rm -f "$T/sbin/reboot"
 cat > "$T/sbin/reboot" <<S
 #!/bin/sh
@@ -83,7 +83,7 @@ if [ "\${1-}" = config ]; then
 	echo config > /proc/rp2350/next_boot || exit 1
 	shift
 fi
-exec $reboot_bb reboot "\$@"
+exec /bin/busybox reboot "\$@"
 S
 chmod 755 "$T/sbin/reboot"
 
