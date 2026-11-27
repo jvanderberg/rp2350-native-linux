@@ -1,149 +1,160 @@
-# Linux on the RP2350, natively
+# Native Linux on the RP2350
 
-Linux 6.12 running natively on the Cortex-M33 of a Raspberry Pi RP2350, a
-microcontroller with no MMU. Core 0 runs a nommu kernel, executing in place
-from flash, with 8 MiB of PSRAM as its RAM. Core 1 is an I/O processor: it
-runs the USB console, the Wi-Fi radio and the SD card, and carries out
-flash writes.
+The Raspberry Pi RP2350 can boot Linux 6.12, accept an SSH connection over
+Wi-Fi, and compile and run a C program in that session. The kernel runs
+directly on one Cortex-M33 core, executing in place from flash with 8 MiB
+of external PSRAM. The second core handles the USB console, Wi-Fi, SD card
+and flash writes.
 
-Without an MMU, Linux normally offers only `vfork` and one shared address
-space. Here the QMI's address translation (ATRANS) gives each process its
-own window at a fixed address, so programs get real `fork`, the MPU confines
-each one to its window, and a whole process can be written to the SD card
-and brought back elsewhere in memory.
+**The port supports `fork()` on a chip with no MMU.** On each context
+switch, the kernel uses the RP2350 memory interface’s address translation
+(ATRANS) to map the next process’s PSRAM into a fixed address window.
+A forked child sees its own copy of the parent’s data at the same
+addresses, so its pointers still work. The same mechanism lets Linux swap
+an idle process to SD and restore it to a different spot in RAM.
 
-## What works
+## What runs on the board
 
-- **Processes with real `fork`**, through ATRANS windows: the shell, tmux,
-  SSH sessions and the userland's programs are static ATRANS binaries with
-  their own address space ([docs/atrans.md](docs/atrans.md)).
-- **Swap to the SD card**: idle processes are swapped out whole, and come
-  back when they wake ([docs/atrans-swap.md](docs/atrans-swap.md)).
-- **Wi-Fi and SSH**: the CYW43439 radio as `eth0`, DHCP, and dropbear.
-  Logins take about 1 s with the Mac's default ssh settings, so no special
-  client configuration is needed.
-- **mDNS**: the board answers as `rp2350.local` (`ssh root@rp2350.local`),
-  and its ssh and telnet show up in service browsers (`dns-sd -B
-  _ssh._tcp`).
-- **Telnet** on port 23.
-- **The SD card**: FAT at `/mnt/sd`, and its swap partition.
-- **`/home` on flash** (jffs2, 1 MiB), kept across reboots and reloads.
-- **tcc on the board**: compile and run C programs on the board itself.
-- **GPIO, I2C, SPI, PWM, ADC and PIO**, through the standard Linux
-  interfaces (`/dev/gpiochip0`, `/dev/i2c-N`, `/dev/spidev0.0`, sysfs PWM,
-  IIO), plus `/dev/pio1` and `/dev/pio2` with libpio and `pioasm`
-  ([pins/README.md](pins/README.md)).
-- **MicroPython**, with `machine` and `rp2` modules for the pins and PIO.
-- **tmux and friends**: tmux, htop, nano, mg, less, Lua and ncdu from
-  Buildroot. More programs are in [extras/](extras/README.md), built on
-  the board with tcc: `mc` (a Midnight Commander lookalike), `tm` (a small
-  tmux work-alike), `xterm`, games and demos, X11 programs, a small web
-  server and a telnet BBS.
+- **A networked shell.** SSH to `root@rp2350.local`, start a tmux session,
+  edit files with nano or mg, and inspect processes with htop. Dropbear
+  supports X11 forwarding to a host X server.
+- **A native C compiler.** TinyCC ships as `cc`. You can write a program,
+  compile it and run it from the board’s shell. The SD card holds larger
+  projects, and a 1 MiB flash filesystem keeps your home directory across
+  reboots and firmware updates.
+- **Hardware control from Linux.** Drive GPIO, I²C, SPI, PWM and ADC through
+  Linux device interfaces. Load PIO programs from C with libpio or from
+  MicroPython with the `machine` and `rp2` modules. [Pin interfaces and examples](pins/README.md)
+- **Applications with source.** The optional SD card bundle includes a file
+  manager, an X terminal, a web server and games including Wolfenstein 3D.
+  [Extras catalogue](extras/README.md)
 
 ## Hardware
 
-- **An RP2350A or RP2350B**, at 150 to 348 MHz (set in setup).
-- **8 MiB of PSRAM** (APS6404L) on QMI CS1: GP0, GP8, GP19 or GP47.
-- **16 MiB of flash**: the flash map below reaches 0x10FFFFFF.
-- **A CYW43439 Wi-Fi module** (RM2), run from PIO0; by default wired as on
-  the Pico 2 W: WL_ON GP23, data/IRQ GP24, CS GP25, clock GP29.
-- **A micro SD card** on SPI0 or SPI1; by default SPI1 on GP8 MISO, GP9
-  CS, GP10 SCK, GP11 MOSI. Its first partition is FAT; a second partition
-  with a Linux swap signature becomes swap.
-- **USB** to a host, for the console and loading.
+Check the memory and peripheral wiring before flashing. Setup lets you
+select the CPU clock (150–348 MHz) and assign pins to match your board.
 
-Which pins these are is the board config, set in the boot stub's setup
-screen ([docs/boot-and-io.md](docs/boot-and-io.md), "Setup and the board
-config"). Those pins, PIO0 and the SD card's SPI block belong to core 1;
-the other pins are Linux's ([pins/README.md](pins/README.md)).
+| Component | Requirement or default wiring |
+|---|---|
+| MCU and flash | RP2350A or RP2350B with 16 MiB of flash |
+| External RAM | 8 MiB APS6404L PSRAM on QMI CS1. Chip select can be GP0, GP8, GP19 or GP47. |
+| Wi-Fi | CYW43439 (RM2) on PIO0. Defaults follow the Pico 2 W wiring, with WL_ON on GP23, data/IRQ on GP24, CS on GP25 and clock on GP29. |
+| microSD | SPI0 or SPI1. The default is SPI1 with MISO on GP8, CS on GP9, SCK on GP10 and MOSI on GP11. |
+| USB | Connection to a host for flashing and the serial console |
+
+Core 1 owns the configured peripheral pins, PIO0 and the SD card’s SPI
+controller. The remaining pins are available to Linux. [Board setup and I/O](docs/boot-and-io.md)
 
 ## Installing
 
-Download the files from the **[latest release](https://github.com/jvanderberg/rp2350-native-linux/releases/latest)**,
-or build them yourself ([Building from scratch](#building-from-scratch)).
-The board needs the [hardware](#hardware) above.
-
-1. **Flash it.** Hold BOOTSEL while plugging the board into USB. It shows
-   up as a drive named `RP2350`. Copy `rp2350-native-linux-VERSION.uf2`
-   onto it. The copy takes a few minutes, then the board restarts.
-2. **Open the console.** The board is a USB serial port:
+1. Download `rp2350-native-linux-VERSION.uf2` from the [latest release](https://github.com/jvanderberg/rp2350-native-linux/releases/latest).
+   Hold BOOTSEL while connecting USB and copy the UF2 to the `RP2350`
+   drive. The copy takes a few minutes and the board restarts.
+2. Open the USB serial console with the command for your host.
 
    ```sh
    screen /dev/cu.usbmodemnative1 115200   # macOS
    screen /dev/ttyACM0 115200              # Linux
    ```
 
-3. **Set it up.** A new board opens the setup screen on the console. Press
-   Ctrl-L if the screen is blank. Check the pins for your wiring. Use
-   **Find the PSRAM** if you don't know its chip select. Then enter your
-   Wi-Fi network and passphrase, and choose **Save and boot**.
-4. **Log in** as `root`, with no password.
-5. **Make `/home`, once.** On a new board, `/home` (where `/root` lives) is
-   in RAM until its flash region holds jffs2. To create it, run
-   `flash_eraseall -j /dev/mtd3` and then `reboot` ([Using it](#using-it)).
+3. A fresh board opens setup. Press Ctrl-L to redraw a blank screen.
+   Check the pins, use **Find the PSRAM** if you need to identify its chip
+   select, and enter your Wi-Fi credentials. Choose **Save and boot**,
+   then log in on the console as `root` with an empty password.
+4. On first install, initialize persistent storage for `/home`, which
+   includes `/root`. Until then, home directories live in RAM. Run the
+   first command below and confirm that `mtd3` is named `"home"` before
+   running the erase command. It destroys any contents of that partition.
 
-Updating is step 1 alone. The UF2 leaves `/home` and the setup screen's
-settings as they are.
+   ```sh
+   grep home /proc/mtd
+   flash_eraseall -j /dev/mtd3
+   reboot
+   ```
 
-**Extras.** `rp2350-extras-VERSION.zip` has the [extras](extras/README.md)
-(games, `mc`, `tm`, `xterm`, Wolfenstein 3D and more), built and ready to
-run, with their sources. Unzip it on your computer (the board has no
-`unzip`) and copy the `extras` folder to the SD card. On the board, run
-them from `/mnt/sd/extras`, for example `/mnt/sd/extras/games/asteroids`.
+For firmware updates, repeat step 1. The UF2 preserves both the home
+partition and the saved board settings. To revisit setup, run
+`reboot config` or press a key during the boot countdown.
 
-**`SHA256SUMS`** has the files' checksums.
+### Connect and compile
+
+From the console, put your SSH public key in `/root/.ssh/authorized_keys`.
+Dropbear accepts public keys only and keeps its host keys in
+`/home/dropbear`. Connect from your host with `ssh root@rp2350.local`.
+If your host lacks mDNS, use the DHCP address shown by
+`ip addr show eth0` on the console. Telnet on port 23 also gives a root
+shell without authentication or encryption. Use it only on a trusted network.
+
+Try the native compiler from either shell:
+
+```sh
+cd /root
+echo 'int main(void) { return 42; }' > answer.c
+cc -o answer answer.c
+./answer
+echo $?    # 42
+```
+
+### Use the SD card
+
+Linux mounts the first FAT partition at `/mnt/sd`. To install the extras,
+unpack `rp2350-extras-VERSION.zip` on your host and copy the `extras`
+directory to the card. Try `/mnt/sd/extras/games/asteroids` from the shell.
+The release includes `SHA256SUMS` for verifying the downloads.
+
+For swap, use a second partition with a Linux swap signature or a swap file
+at `/mnt/sd/atrans.swp`. [Swap setup with `atrans-mkswap`](docs/atrans-swap.md)
+
+## Process model and limits
+
+The shell, compiler and interactive tools are static ATRANS binaries.
+Each process gets a contiguous data block in PSRAM and the Cortex-M33’s
+memory protection unit confines its access. Processes running the same
+v3 binary share its read-only code through a second window. PID 1 and a
+few small daemons use the conventional Linux no-MMU FDPIC format.
+
+Each ATRANS data window is limited to 4 MiB. Fork copies the process’s
+data, and switching windows flushes the 16 KiB XIP cache. Linux uses one
+core and lacks `mprotect`, writable `MAP_SHARED`, `dlopen` and `ptrace`.
+
+Measurements on the board at **348 MHz** show how those costs scale:
+
+| Operation | Measured time |
+|---|---|
+| SSH reachable after reset | About 7 s |
+| `fork` + `exit` + `wait`, small process | About 5 ms |
+| Same operation with 1 MiB of heap in use | About 60 ms |
+| Context switch between ATRANS processes | About 180 µs |
+
+The design notes cover the [process ABI and fork](docs/atrans.md),
+[QMI address translation](docs/qmi-atrans.md), [memory allocation](docs/memory.md)
+and [benchmark conditions and results](docs/performance.md).
 
 ## Building from scratch
 
-Needs Docker (with about 25 GB free in its disk), git, Python 3, Rust
-(rustup; `rust-toolchain.toml` pins the release and the targets) and, to
-load, picotool. The scripts assume a Mac host (`/dev/cu.*`, `stty -f`).
-Everything but the boot stub and `claude-guest-mcp` builds in Docker.
-Buildroot is cloned into `src/buildroot` at the release pinned in
-`run-build.sh` (`BR_TAG`, `BR_REV`); build trees go in the Docker volume
-`rp2350-native-work` (`WORK_VOLUME=name` picks another); outputs go in
-`out/`. None of these are in git.
+Install Git, Python 3, Rust via rustup, and Docker with about 25 GB free
+in its disk. Install picotool to load a local build. The host-side loading
+scripts assume macOS. A clean build takes about an hour on a four-core
+arm64 GitHub runner. Subsequent builds are incremental.
 
-`./build-all.sh` runs the whole sequence. From nothing it takes about an
-hour on a GitHub 4-core arm64 runner (56 minutes: 30 for the native
-Buildroot, 21 for the ATRANS toolchain, 5 for the rest), and each step is
-incremental after that:
+```sh
+./build-all.sh                # Build userland, toolchains, kernel and boot stub
+./load.sh                     # Load the images over USB
+```
 
-1. `./run-build.sh rootfs`: the native Buildroot (gcc, uClibc-ng FDPIC,
-   busybox). Its toolchain builds the kernel, its tree seeds the pins
-   build, and it downloads the busybox source `busybox-atrans` is built
-   from.
-2. `atrans/run-build.sh all`: the ATRANS toolchain (gcc, musl) and packages,
-   `claude-guest-mcp` (`claude-remote/`, host Rust),
-   `busybox-atrans`; then `out/atrans-root/` and
-   `out/atrans-sysroot.tar.gz` ([atrans/README.md](atrans/README.md)).
-3. tcc ([tcc/](tcc/)): `tcc/apply-patches.sh` (tinycc from its GitHub
-   mirror, or repo.or.cz, plus `tcc/patches/`), then in the tcc image (`tcc/run-host.sh sh
-   /native/tcc/...`): `import-sysroot.sh /native/out/atrans-sysroot.tar.gz`,
-   `host-build.sh` (the cross tcc), and with `BOARD_LIBC=/usr/lib/atrans`
-   `native-build.sh /native/out/tcc-root` (the board's tree: `/usr/bin/tcc`,
-   `/usr/lib/tcc`; the C library is the ATRANS sysroot's).
-4. `pins/run-build.sh`: `out/pins-root/` ([pins/README.md](pins/README.md)).
-   Its PIO tests are built with the ATRANS gcc (step 2) and tcc (step 3).
-5. `./run-build.sh all`: the root filesystem again, now with
-   `out/atrans-root/`, `out/tcc-root/` and `out/pins-root/` copied in
-   (`post-build-devices.sh`), `out/xip.romfs`, and the kernel.
-6. `cd boot && cargo build --release`: the boot stub (`load.sh` does this
-   too).
+Hold BOOTSEL when connecting the board for the first load. On subsequent
+loads the script can reset the running board over USB. It checks image
+sizes, skips unchanged filesystem images and preserves the board config
+and home partition. Use `./load.sh --stub-only` to update just the boot stub.
 
-Then `tools/release.sh [VERSION]` makes the release files in
-`out/release/` (the UF2, with `tools/mkuf2.py`, and the extras zip, with
-`tools/extras-gcc.sh`).
+Buildroot uses the revision pinned in `run-build.sh` and builds in the
+Docker volume `rp2350-native-work`. Images appear in `out/`. Use
+`./run-build.sh kernel` for a kernel-only rebuild or `./run-build.sh rootfs`
+after changing a staged userland tree. Run `tools/release.sh VERSION` to
+package the UF2 and extras in `out/release/`.
 
-Partial rebuilds:
-
-- `./run-build.sh kernel` rebuilds only the kernel, and `./run-build.sh
-  rootfs` only the root filesystem (run it after changing any of the
-  `out/*-root/` trees).
-- `NATIVE_TAG=name ./run-build.sh` builds in trees of its own, for parallel
-  work.
-- `SRAM_DATA=1 ./run-build.sh kernel` links the kernel's `.data`/`.bss`
-  into SRAM ([docs/memory.md](docs/memory.md)).
+See the [build sequence](build-all.sh), [ATRANS toolchain](atrans/README.md),
+[TinyCC patches and scripts](tcc/) and [two-board pin tests](docs/pin-tests.md).
 
 Tests that need no board:
 
@@ -160,24 +171,6 @@ board: copy `out/tcc-root` to a directory in the volume, unpack
 `out/atrans-sysroot.tar.gz` into its `usr/lib/atrans`, and give that
 directory to `native-test.sh DIR` and `ROOT=DIR selfhost.sh`.
 
-## Loading
-
-```sh
-./load.sh             # stub + xipImage + DTB (+ rootfs.squashfs, xip.romfs if changed) over USB BOOTSEL
-./load.sh --stub-only # only the boot stub
-```
-
-`load.sh` builds the boot stub, checks each image against its slot, and
-loads them with picotool. It gets the board into BOOTSEL itself: through the
-console's 1200-baud reset when this system is running, or through a debug
-probe (probe-rs, `PROBE_RS=path`). The first time, hold BOOTSEL while
-plugging the board in. The root filesystem and the xip romfs are written
-only when they differ from what the board holds (`picotool verify`).
-
-It never writes `/home` or the board config sector.
-`STUB_CARGO_FLAGS=--no-default-features ./load.sh` builds the stub with all
-of core 1's code in flash instead of SRAM.
-
 ### Flash map
 
 | Address | Contents |
@@ -190,142 +183,6 @@ of core 1's code in flash instead of SRAM.
 | 0x10400000 | Root filesystem: squashfs, at most 0x980000 bytes (mtd1) |
 | 0x10D80000 | `xipImage`: kernel text and compressed data, at most 0x270000 bytes |
 | 0x10FF0000 | Scratch, 64 KiB (mtd4): free to erase, for tests |
-
-## Using it
-
-**Console.** Over USB:
-
-```sh
-screen /dev/cu.usbmodemnative1 115200    # log in as root, no password
-```
-
-**Setup.** The boot stub has a setup screen on the console, where the
-board config is set: the CPU speed, the PSRAM's chip select, the SD
-card's and the Wi-Fi radio's pins, and the Wi-Fi network. A board with no
-config starts in it; otherwise the stub counts down 10 seconds at each boot
-(press a key for setup), or `reboot config` on the board opens it at the
-next boot ([docs/boot-and-io.md](docs/boot-and-io.md)).
-
-**Wi-Fi.** Set the network in setup. The board then joins at every boot,
-rejoins when the link drops, and takes an address by DHCP. `ip addr show
-eth0` on the console shows it.
-
-**/home.** `/root` is `/home/root`, on flash. On a board whose `/home`
-region doesn't hold jffs2 yet, `/home` is in RAM and nothing is formatted
-for you. To create it, erase the region as jffs2 from the console, which
-destroys whatever it held, and reboot:
-
-```sh
-grep home /proc/mtd             # the MTD named "home": mtd3
-flash_eraseall -j /dev/mtd3
-reboot
-```
-
-**SSH.** dropbear on port 22 accepts public keys only. Put your public key
-in `/root/.ssh/authorized_keys` on the board (from the console), then
-`ssh root@ADDRESS`. Host keys are made at the first connection and kept in
-`/home/dropbear`.
-
-X11 forwarding works: `ssh -Y root@ADDRESS PROGRAM` shows an X program
-from the board on the host's X server (XQuartz on a Mac). The login gets
-its own display, `DISPLAY=localhost:10.0` for the first (`:11.0` for a
-second at the same time, and so on), and `/usr/bin/xauth` (`atrans/xauth.c`) stores the session's cookie
-in `~/.Xauthority`, where the X client must find it and send it.
-
-**Telnet.** `telnet ADDRESS`, root with no password. It is unencrypted and
-unauthenticated, so use it only on a network you trust.
-
-**SD card.** A card's first FAT partition is mounted at `/mnt/sd`, at boot
-or when it goes in. A partition with a Linux swap signature (or a file
-`/mnt/sd/atrans.swp`) becomes swap; `atrans-mkswap` makes one
-([docs/atrans-swap.md](docs/atrans-swap.md)).
-
-**Compiling on the board.** `tcc` (also `cc`) builds ATRANS programs:
-`cc -o hello hello.c && ./hello`.
-
-## How it works
-
-- **Boot.** The boot stub sets up the clocks and PSRAM, maps the PSRAM at
-  0x11400000 for the kernel, starts core 1, and jumps to the kernel in
-  flash. `overlay-init` puts a tmpfs overlay on the read-only squashfs,
-  binds the xip romfs's files in place, copies busybox's text into SRAM if it
-  fits, and mounts `/home` ([docs/boot-and-io.md](docs/boot-and-io.md)).
-- **Two kinds of program.** ATRANS programs are static binaries linked in
-  the window at 0x11000000; each process's data is one PSRAM block, which
-  the kernel maps there on every switch. A v3 binary's text sits in a
-  second window, shared by every process running it. FDPIC programs are
-  ordinary nommu programs; they run PID 1 and a few small daemons.
-- **Memory.** Anything that grows runs as ATRANS, because an ATRANS block
-  can be moved and swapped. A 5 MiB pool holds only ATRANS blocks and
-  compacts them; its free space is lent to the kernel when the kernel is
-  short ([docs/memory.md](docs/memory.md)).
-- **I/O.** Linux talks to core 1 through rings and control blocks in a
-  shared SRAM area and SIO doorbells. Core 1 never writes PSRAM, so the
-  cache flushes at each process switch can't lose its data.
-
-## Measured performance
-
-On the board, at 348 MHz ([docs/performance.md](docs/performance.md)):
-
-| | |
-|---|---|
-| CoreMark, gcc -O3 / -O2 | 886 / 850 |
-| CoreMark, built with tcc on the board | 163 |
-| Syscall | 0.84 µs |
-| `fork` + `exit` + `wait` | 5 ms |
-| `vfork` + `exec` | 8.3 ms |
-| PSRAM read / write | 41 / 13 MB/s |
-| CRNG seeded from the hardware TRNG | at 0.6 s |
-
-## Known limitations
-
-- **No MMU**, so no `mprotect`, no writable `MAP_SHARED` and no `dlopen`.
-- **4 MiB of data per process**, the size of the ATRANS window, in one
-  contiguous block.
-- **Context switches cost:** about 180 µs between two ATRANS
-  processes. A switch cleans and invalidates the 16 KiB XIP cache, and then
-  both the kernel and the process refill their working sets: a pipe round
-  trip takes about 0.35 ms, against 0.10 ms between FDPIC processes, which
-  don't switch windows ([docs/performance.md](docs/performance.md)).
-- **One CPU for Linux:** core 1 is the I/O processor, and the ATRANS windows
-  and the XIP cache are shared by both cores.
-- **No ptrace.**
-
-## Repository layout
-
-| Path | What it is |
-|---|---|
-| `build-all.sh`, `run-build.sh`, `build.sh` | The build: everything in order; the native Buildroot and the kernel (in Docker) |
-| `load.sh` | Loads the images onto the board over USB BOOTSEL |
-| `buildroot.defconfig`, `busybox.fragment`, `post-build.sh`, `post-build-devices.sh` | The native userland: Cortex-M4 code (ARMv7-M, which the M33 runs), soft-float, uClibc-ng, FDPIC, busybox; the root filesystem's scripts, services and the hook that copies in the `out/*-root/` trees |
-| `patches/` | Fixes to Buildroot's packages for the native userland (`BR2_GLOBAL_PATCH_DIR`): uClibc-ng's own calls to `__aeabi_read_tp` bind locally, so FDPIC threads work, and its `daemon()` keeps the exiting parent off the child's stack; BusyBox's shells leave no history temp files when /home is full |
-| `mkxiprom.py`, `xiprom.list` | The xip romfs: files run in place from flash |
-| `linux.fragment`, `linux-devices.fragment`, `linux-pins.fragment`, `linux-sram-data.fragment` | Kernel configuration, merged on top of tinyconfig |
-| `rp2350.dts`, `rp2350-pins.dtsi` | The device tree |
-| `linux/` | Added to a stock 6.12 tree by `linux/apply.sh`: the machine (`mach-rp2350`), the drivers (`drivers/rp2350`: timer, console, network, SD, flash, TRNG, pins, PIO, ATRANS, the pool and swap), and patches to the core kernel |
-| `boot/` | The boot stub and core 1's firmware (Rust); `boot/sdcard` is the SD card protocol, `boot/firmware` the radio's firmware |
-| `atrans/` | The ATRANS toolchain (Buildroot, musl, patched gcc and binutils), its packages and the tree they make ([atrans/README.md](atrans/README.md)) |
-| `tcc/` | TinyCC for ARMv7-M Thumb-2 ATRANS programs: patches, build and test scripts |
-| `pins/`, `br-external/` | The pin tools' userland: libpio, MicroPython's `machine`, examples ([pins/README.md](pins/README.md)) |
-| `extras/` | Programs for the board: `mc`, `tm`, `xterm`, games and demos, `httpd`, a BBS, Wolfenstein 3D, `ws2812` ([extras/README.md](extras/README.md)) |
-| `claude-remote/` | `claude-remote` and `claude-guest-mcp`, an MCP tool server built as an ATRANS program |
-| `tests/` | Kernel tests (`forktest`, `forktest3`, `swaptest`), the FDPIC switch baseline `pingpong`, `sramload`, `watchd`, and the ATRANS linker scripts |
-| `docker/` | The image the Buildroot builds run in (`rp2350-native-build`) |
-| `.github/workflows/` | `release.yml`: the whole build and the release files on a GitHub arm64 runner |
-| `tools/` | `release.sh`, `mkuf2.py` and `extras-gcc.sh` (the release files), `preflight.sh` (sourced by the scripts), board session tools (`board-lock.sh`, `boot-wait.py`, `serial-chat.py`, `board-cmd.py`), `hot-text.py` (which kernel code goes in SRAM, from `/proc/pcsample` profiles), and the two-board pin harness (`pin-test.py`, `pintester/`) |
-| `docs/` | Design notes and measurements (below) |
-
-## Documentation
-
-| Document | Subject |
-|---|---|
-| [docs/atrans.md](docs/atrans.md) | ATRANS processes: the ABI, blocks, fork, switching, the MPU, the kernel changes |
-| [docs/atrans-swap.md](docs/atrans-swap.md) | Whole-process swap to the SD card |
-| [docs/memory.md](docs/memory.md) | Memory layout, code placement, the ATRANS pool, OOM policy, kernel memory |
-| [docs/boot-and-io.md](docs/boot-and-io.md) | The boot stub, core 1's console, Wi-Fi, SD card and flash writes, startup and init scripts |
-| [docs/qmi-atrans.md](docs/qmi-atrans.md) | How the QMI's ATRANS translation and the XIP cache behave |
-| [docs/performance.md](docs/performance.md) | Measurements |
-| [docs/pin-tests.md](docs/pin-tests.md) | Testing the pins against a second board |
 
 ## License
 
