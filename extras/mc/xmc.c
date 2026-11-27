@@ -2666,14 +2666,19 @@ static void open_entry(int pi)
 static void edit_current(void)
 {
     struct entry *e = panel_current(&pan[act]);
+    const char *xed = getenv("XEDITOR");
     const char *ed = getenv("EDITOR");
     char cmd[PATH_MAX + 64];
+    char name[PATH_MAX];
+    int window = xed && *xed;
 
     if (!e || entry_is_dir(e))
         return;
-    snprintf(cmd, sizeof cmd, "%s ", ed && *ed ? ed : "vi");
-    quote_onto(cmd, sizeof cmd, e->name);
-    job_start(pan[act].path, cmd, cmd, 1);
+    if (path_join(name, sizeof name, ".", e->name) != 0)
+        return;
+    snprintf(cmd, sizeof cmd, "%s ", window ? xed : (ed && *ed ? ed : "vi"));
+    quote_onto(cmd, sizeof cmd, name);
+    job_start(pan[act].path, cmd, cmd, !window);
 }
 
 static void do_cd(const char *arg)

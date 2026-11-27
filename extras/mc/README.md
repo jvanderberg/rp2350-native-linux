@@ -180,6 +180,8 @@ Mac, say), in the style of `../pulse/xpulse`:
   on its screen (an X program, vi when you quit) closes by itself; once
   the program has ended, a key closes it. Closing a tab whose program is
   still running hangs up on it.
+- **Windowed editor.** Set `XEDITOR=/mnt/sd/extras/xedit/xedit` before
+  launching `xmc` to have F4 open the selected file in its own X11 window.
 
 It needs `../lib/x11.h` and the terminal in `../lib/vt` (`vt.c`, `sb.c`,
 `lz.c`, `vtutil.c`, `vtpane.h`), which `build.sh` compiles in.

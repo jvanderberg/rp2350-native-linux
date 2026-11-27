@@ -13,3 +13,6 @@ target/
 *.swp
 *~
 __pycache__/
+
+/extras/xedit/xedit
+/extras/xedit/xedit.new
