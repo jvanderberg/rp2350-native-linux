@@ -74,7 +74,10 @@ protocol itself, so no Xlib is needed; it is the window counterpart of
 do), `x11.h` also draws anti-aliased text in TrueType fonts (the board has
 DejaVu Sans and DejaVu Sans Mono in `/usr/share/fonts/dejavu`), shapes with
 smooth edges and see-through colours, and has smooth cursors and the
-clipboard; `xgallery` shows them all. The simplest way to run one is
+clipboard; `xgallery` shows them all. On a server with the HIDPI extension
+([crystalX](https://github.com/jvanderberg/crystalx) on a high-density
+screen) the text is made at the screen's own resolution rather than
+enlarged; `X11_HIDPI=0` turns that off. The simplest way to run one is
 through SSH's X11 forwarding, from the machine with the screen:
 
 ```
