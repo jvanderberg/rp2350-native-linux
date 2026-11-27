@@ -22,7 +22,7 @@ cp -r /native/extras $W/extras
 chmod -R u+w $W/extras
 export PATH=$A:/work/pins-host:$PATH TMPDIR=$W/tmp
 cd $W/extras
-for d in games maze pulse samples httpd tm xterm mc; do
+for d in games maze pulse samples httpd tm xterm mc xedit; do
 	CC=atrans-gcc CFLAGS="-O2 -Wall" sh $d/build.sh
 done
 CC=atrans-gcc CFLAGS="-Os" sh vim/build.sh

@@ -18,6 +18,7 @@ those programs build with the cross tcc.
 | [`httpd/`](httpd/README.md) | A small static file server | `./build.sh && ./httpd` |
 | [`tm/`](tm/README.md) | A small tmux work-alike | `./build.sh && ./tm` |
 | [`xterm/`](xterm/README.md) | A terminal in an X11 window | `./build.sh`, see its README |
+| [`xedit/`](xedit/README.md) | An X11 text editor with menus and file dialogs, for files larger than RAM | `./build.sh && ./xedit [filename]` |
 | [`vim/`](vim/README.md) | Vim's tiny terminal build with core help | `./build.sh && ./vim filename` from the extras ZIP |
 | [`mc/`](mc/README.md) | A Midnight Commander lookalike, and `xmc`, the same in an X11 window | `./build.sh && ./mc` |
 | [`bbs/`](bbs/) | A telnet BBS with a MUD | `./bbsctl start` |
