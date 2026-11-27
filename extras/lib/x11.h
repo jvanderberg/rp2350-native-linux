@@ -69,8 +69,11 @@
  *             (x_has_render; see "RENDER" below): x_font_ttf opens a
  *             TrueType font for anti-aliased text in the calls above (the
  *             board has DejaVu Sans and DejaVu Sans Mono, regular and
- *             bold). x_aa_fill_ellipse, x_aa_ellipse, x_aa_round_rect,
- *             x_aa_polygon, x_aa_polyline and x_aa_triangles draw shapes
+ *             bold); with the HIDPI extension (crystalX on a high-density
+ *             screen) its glyphs are made at the screen's own resolution,
+ *             while sizes stay in X pixels. x_aa_fill_ellipse,
+ *             x_aa_ellipse, x_aa_round_rect, x_aa_polygon, x_aa_polyline
+ *             and x_aa_triangles draw shapes
  *             with smooth edges at an opacity, in 16.16 fixed point
  *             (X_FX(2.5) is two and a half pixels); x_blend_rect lays a
  *             see-through rectangle over what is there. Without RENDER,
@@ -1293,6 +1296,8 @@ static const unsigned char xi_cur_text[378] = {
 static int xi_render_state;             /* 0: not asked yet, 1: there, -1: not */
 static int xi_rmajor;                   /* its opcode */
 static unsigned int xi_pf_a8, xi_pf_rgb, xi_pf_argb;   /* picture formats */
+static int xi_hidpi_op;                 /* the HIDPI extension's opcode, or 0 */
+static int xi_hidpi = 1;                /* its scale: device pixels per X pixel */
 
 static unsigned int xi_isqrt(unsigned int v)
 {
@@ -1390,11 +1395,55 @@ static int xi_render_init(void)
     return xi_pf_a8 != 0 && xi_pf_rgb != 0;
 }
 
+/* HIDPI, an extension of servers that draw at a finer resolution than X
+ * pixels (crystalX on a 2x screen): QueryVersion gives that scale, and
+ * SetGlyphSetScale lets a glyph set's images, origins and advances be in
+ * 1/scale X pixels, so TrueType text is rendered at the screen's own
+ * resolution instead of enlarged. X11_HIDPI=0 leaves it alone. */
+static void xi_hidpi_init(void)
+{
+    unsigned char b[32], *x = NULL;
+    const char *env = getenv("X11_HIDPI");
+    int op;
+
+    xi_hidpi_op = 0;
+    xi_hidpi = 1;
+    if (env != NULL && strcmp(env, "0") == 0)
+        return;
+    xi_req(98, 0, 2 + 2);               /* QueryExtension "HIDPI" */
+    xi_put16(5);
+    xi_put16(0);
+    for (const char *p = "HIDPI"; *p != '\0'; p++)
+        xi_put8((unsigned char)*p);
+    xi_put8(0);
+    xi_put16(0);
+    if (xi_roundtrip(b, &x) != 0 || !b[8]) {
+        free(x);
+        return;
+    }
+    free(x);
+    x = NULL;
+    op = b[9];
+    xi_req(op, 0, 1);                   /* HIDPIQueryVersion */
+    if (xi_roundtrip(b, &x) == 0 && xi_get16(b + 8) == 1) {
+        unsigned int s = xi_get32(b + 12);
+
+        if (s >= 2 && s <= 8) {
+            xi_hidpi_op = op;
+            xi_hidpi = (int)s;
+        }
+    }
+    free(x);
+}
+
 /* Whether the server has RENDER, so that the calls below can draw. */
 static inline int x_has_render(void)
 {
-    if (xi_render_state == 0)
+    if (xi_render_state == 0) {
         xi_render_state = xi_fd >= 0 && !xi_dead && xi_render_init() ? 1 : -1;
+        if (xi_render_state > 0)
+            xi_hidpi_init();
+    }
     return xi_render_state > 0;
 }
 
@@ -1508,7 +1557,9 @@ struct xi_ttf {
     int borrowed;                       /* d belongs to another size's face */
     unsigned int glyf, loca, hmtx, cmap;
     int loca_long, cmap_fmt, nhm, nglyphs, upem, ascent, descent, px, qmark;
-    int cell_w, cell_asc, cell_desc;    /* x_font_ttf_cell: glyphs cut to this box */
+    int gs;                             /* glyph pixels per X pixel (HIDPI), 1 without */
+    int cell_w, cell_asc, cell_desc;    /* x_font_ttf_cell: glyphs cut to this box, */
+                                        /* in glyph pixels */
     unsigned char *have[256];           /* which code points the glyph set has: bit pages */
 };
 
@@ -1946,18 +1997,20 @@ struct xi_glyph {
     unsigned char *alpha;
 };
 
+/* In glyph pixels, f->gs to the X pixel: the advance is the X-pixel one
+ * (what x_text_width counts) times gs, so text lands where it was measured. */
 static void xi_ttf_render(const struct xi_ttf *f, int g, struct xi_glyph *out)
 {
     static const int ident[6] = { 16384, 0, 0, 16384, 0, 0 };
     struct xi_outline o;
     struct xi_raster r;
-    long long sc = ((long long)f->px << 24) / f->upem;     /* font units to 16.16 pixels, << 8 */
+    long long sc = ((long long)(f->px * f->gs) << 24) / f->upem;   /* font units to 16.16 pixels, << 8 */
     int minx = 0x7fffffff, miny = 0x7fffffff, maxx = -0x7fffffff, maxy = -0x7fffffff;
 
     o = xi_sc.o;
     o.n = o.nc = 0;
     memset(out, 0, sizeof *out);
-    out->adv = (xi_ttf_advance(f, g) * f->px * 2 + f->upem) / (2 * f->upem);
+    out->adv = (xi_ttf_advance(f, g) * f->px * 2 + f->upem) / (2 * f->upem) * f->gs;
     if (xi_ttf_outline(f, g, 0, &o, ident) < 0 || o.n == 0)
         goto done;
     /* to 16.16 pixels, y down */
@@ -2241,6 +2294,10 @@ static int xi_font_ttf(const char *file, int px, int cell)
         return 0;
     }
     f->px = px;
+    /* at the server's scale, but no glyph bigger than a 96-pixel font's:
+     * one image has to fit a request */
+    for (f->gs = xi_hidpi; f->gs > 1 && px * f->gs > 96; f->gs--)
+        ;
     f->qmark = xi_ttf_glyph(f, '?');
     fi = xi_nfonts++;
     xi_fonts[fi].id = 0;
@@ -2253,6 +2310,11 @@ static int xi_font_ttf(const char *file, int px, int cell)
     xi_req(xi_rmajor, 17, 3);           /* RenderCreateGlyphSet */
     xi_put32(xi_fonts[fi].glyphset);
     xi_put32(xi_pf_a8);
+    if (f->gs > 1) {
+        xi_req(xi_hidpi_op, 1, 3);      /* HIDPISetGlyphSetScale */
+        xi_put32(xi_fonts[fi].glyphset);
+        xi_put32((unsigned int)f->gs);
+    }
     for (unsigned int c = 0; c < 256; c++) {
         int g = xi_ttf_glyph(f, c);
 
@@ -2265,9 +2327,9 @@ static int xi_font_ttf(const char *file, int px, int cell)
     }
     xi_fonts[fi].defw = xi_fonts[fi].w['?'];
     if (cell) {
-        f->cell_w = xi_fonts[fi].w['M'];
-        f->cell_asc = xi_fonts[fi].ascent;
-        f->cell_desc = xi_fonts[fi].descent;
+        f->cell_w = xi_fonts[fi].w['M'] * f->gs;
+        f->cell_asc = xi_fonts[fi].ascent * f->gs;
+        f->cell_desc = xi_fonts[fi].descent * f->gs;
     }
     xi_ttf_add(fi, cps, n);
     return fi;
