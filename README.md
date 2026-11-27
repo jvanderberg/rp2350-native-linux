@@ -26,7 +26,8 @@ an idle process to SD and restore it to a different spot in RAM.
   Linux device interfaces. Load PIO programs from C with libpio or from
   MicroPython with the `machine` and `rp2` modules. [Pin interfaces and examples](pins/README.md)
 - **Applications with source.** The optional SD card bundle includes a file
-  manager, an X terminal, a web server and games including Wolfenstein 3D.
+  manager, an X terminal, a web server, `zip` and `unzip`, and games including
+  Wolfenstein 3D.
   [Extras catalogue](extras/README.md)
 
 ## Hardware
