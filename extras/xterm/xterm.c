@@ -112,7 +112,7 @@ int main(int argc, char **argv)
                 dirty |= term_mouse(&t, &e);
                 break;
             case XE_PASTE:
-                term_paste(&t, e.text, e.len);
+                dirty |= term_paste(&t, e.text, e.len);
                 break;
             }
         }

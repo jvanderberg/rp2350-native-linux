@@ -827,6 +827,45 @@ static int dlg_default(struct dialog *d)
 }
 
 /* Editing keys for an input field. */
+/* Pasted UTF-8 text into an input field at the cursor, on one line:
+ * newlines and tabs as spaces, other control characters left out, as
+ * much as fits, whole characters only. */
+static void input_paste(struct widget *w, const char *s, int n)
+{
+    int len;
+
+    if (!w->changed) {
+        w->buf[0] = 0;
+        w->pos = 0;
+    }
+    w->changed = 1;
+    len = (int)strlen(w->buf);
+    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r'))
+        n--;                            /* a copied line's end: nothing */
+    for (int i = 0; i < n;) {
+        unsigned char c = (unsigned char)s[i];
+        int k = c < 0x80 ? 1 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+        char sp = ' ';
+        const char *from = s + i;
+
+        if (i + k > n)
+            break;
+        i += k;
+        if (c == '\r' && i < n && s[i] == '\n')
+            continue;                   /* CR LF: one space */
+        if (c == '\n' || c == '\r' || c == '\t')
+            from = &sp, k = 1;
+        else if (c < 32 || c == 127 || (c >= 0x80 && c < 0xC0))
+            continue;                   /* a control character, a stray byte */
+        if (len + k >= w->cap)
+            break;
+        memmove(w->buf + w->pos + k, w->buf + w->pos, (size_t)(len - w->pos + 1));
+        memcpy(w->buf + w->pos, from, (size_t)k);
+        w->pos += k;
+        len += k;
+    }
+}
+
 static void input_key(struct widget *w, int k)
 {
     int len = (int)strlen(w->buf);
@@ -948,9 +987,7 @@ int dlg_run(struct dialog *d)
             break;
         case XE_PASTE:
             if (fw && fw->type == W_INPUT)
-                for (int j = 0; j < e.len; j++)
-                    if ((unsigned char)e.text[j] >= 32)
-                        input_key(fw, (unsigned char)e.text[j]);
+                input_paste(fw, e.text, e.len);
             break;
         case XE_BUTTON_DOWN:
             i = dlg_hit(v, e.x, e.y);
@@ -3719,13 +3756,31 @@ int main(int argc, char **argv)
                 break;
             case XE_PASTE:
                 if (CUR_RUNNING) {
-                    term_paste(&CUR->t, e.text, e.len);
+                    dirty |= term_paste(&CUR->t, e.text, e.len);
                 } else if (!ON_TERM) {
-                    char line[1024];
-                    int k = 0;
+                    /* onto the command line, on one line, as much as fits */
+                    char line[sizeof cmdline];
+                    int k = 0, room = (int)(sizeof cmdline - 1 - strlen(cmdline));
 
-                    for (int j = 0; j < e.len && k < (int)sizeof line - 1; j++)
-                        line[k++] = e.text[j] == '\n' || e.text[j] == '\t' ? ' ' : e.text[j];
+                    while (e.len > 0 && (e.text[e.len - 1] == '\n' || e.text[e.len - 1] == '\r'))
+                        e.len--;        /* a copied line's end: nothing */
+
+                    for (int j = 0; j < e.len;) {   /* whole characters */
+                        unsigned char c = (unsigned char)e.text[j];
+                        int m = c < 0x80 ? 1 : c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+
+                        if (j + m > e.len || k + m >= room)   /* cmd_insert needs a byte spare */
+                            break;
+                        if (c == '\r' && j + 1 < e.len && e.text[j + 1] == '\n') {
+                            j++;
+                            continue;
+                        }
+                        if (c == '\n' || c == '\r' || c == '\t')
+                            line[k++] = ' ';
+                        else if (!(c < 32 || c == 127 || (c >= 0x80 && c < 0xC0)))
+                            memcpy(line + k, e.text + j, (size_t)m), k += m;
+                        j += m;
+                    }
                     line[k] = 0;
                     cmd_insert(line);
                     dirty = 1;

@@ -69,9 +69,10 @@ struct term {
     int held;                           /* mouse button down, for reports */
 
     /* the selection, from (sel_l0, sel_c0) to (sel_l1, sel_c1) inclusive:
-     * lines counted from the oldest in the history, so that the screen's
-     * top row is line sb_count(), and the text keeps its place as it
-     * scrolls */
+     * lines counted from the first the history ever had (sb.dropped of
+     * them are gone), so that the screen's top row is line sb.dropped +
+     * sb_count(), and the text keeps its place as it scrolls and as old
+     * lines are dropped */
     int sel_on, sel_drag, sel_c0, sel_c1;
     long sel_l0, sel_l1;
     struct cell *selrow;
@@ -476,14 +477,15 @@ static inline const struct cell *term_row(struct term *t, int r)
     return vt_cell(&t->vt, r, 0);
 }
 
-/* The selection in order: from line *l0, column *c0, to *l1, *c1. */
+/* The selection in order: from line *l0, column *c0, to *l1, *c1, lines
+ * as sb_get counts them (below 0: dropped from the history since). */
 static inline void term_sel_range(const struct term *t, long *l0, int *c0, long *l1, int *c1)
 {
     int swap = t->sel_l1 < t->sel_l0 || (t->sel_l1 == t->sel_l0 && t->sel_c1 < t->sel_c0);
 
-    *l0 = swap ? t->sel_l1 : t->sel_l0;
+    *l0 = (swap ? t->sel_l1 : t->sel_l0) - t->vt.sb.dropped;
     *c0 = swap ? t->sel_c1 : t->sel_c0;
-    *l1 = swap ? t->sel_l0 : t->sel_l1;
+    *l1 = (swap ? t->sel_l0 : t->sel_l1) - t->vt.sb.dropped;
     *c1 = swap ? t->sel_c0 : t->sel_c1;
 }
 
@@ -705,6 +707,10 @@ static inline void term_copy(struct term *t)
     if (!t->started || !t->sel_on)
         return;
     term_sel_range(t, &l0, &c0, &l1, &c1);
+    if (l1 < 0)
+        return;                         /* all of it dropped from the history */
+    if (l0 < 0)
+        l0 = 0, c0 = 0;
     if (l1 - l0 > 5000)
         l0 = l1 - 5000;                 /* enough */
     cap = (size_t)(l1 - l0 + 1) * ((size_t)cols * 4 + 1) + 1;
@@ -755,27 +761,82 @@ static inline void term_copy(struct term *t)
     free(out);
 }
 
-/* Pasted text, typed into the program: newlines as Return, and marked as
- * a paste if the program asked for that (bracketed paste). */
-static inline void term_paste(struct term *t, const char *s, int n)
+/* Write all n bytes to the program, which may take a while: the pty takes
+ * a few KB at a time. Meanwhile read what it writes (the echo), or it
+ * stops reading too. Gives up after 2 s without progress; whether all went. */
+static inline int term_write_all(struct term *t, const char *s, size_t n)
 {
-    if (!t->running || s == NULL || n <= 0)
-        return;
-    if (t->vt.bracketed_paste)
-        term_send(t, "\033[200~");
-    for (int i = 0; i < n; i++) {
-        int j = i;
+    int idle = 0;
 
-        while (j < n && s[j] != '\n')
-            j++;
-        term_reply(t, s + i, (size_t)(j - i));
-        if (j < n)
-            term_send(t, "\r");
-        i = j;
+    while (t->ptm >= 0 && n > 0) {
+        ssize_t w = write(t->ptm, s, n);
+
+        if (w > 0) {
+            s += w;
+            n -= (size_t)w;
+            idle = 0;
+            continue;
+        }
+        if (w < 0 && errno == EINTR)
+            continue;
+        if (w < 0 && errno != EAGAIN)
+            return 0;
+        {
+            struct pollfd p = { t->ptm, POLLIN | POLLOUT, 0 };
+
+            if (poll(&p, 1, 100) <= 0) {
+                if (++idle >= 20)
+                    return 0;
+                continue;
+            }
+            if (p.revents & POLLIN) {
+                unsigned char buf[4096];
+                ssize_t r = read(t->ptm, buf, sizeof buf);
+
+                if (r > 0)
+                    vt_write(&t->vt, buf, (size_t)r);
+            }
+            if (p.revents & (POLLERR | POLLHUP) && !(p.revents & POLLIN))
+                return 0;
+        }
     }
+    return n == 0;
+}
+
+/* Pasted text, typed into the program: newlines as Return, and marked as
+ * a paste if the program asked for that (bracketed paste). Control
+ * characters other than tab and newline are left out, so that the text
+ * can't end the paste early (ESC [201~) and run what follows. Returns
+ * whether the view moved (to the bottom). */
+static inline int term_paste(struct term *t, const char *s, int n)
+{
+    int moved = t->view != 0, k = 0;
+    char *out;
+
+    if (!t->running || s == NULL || n <= 0)
+        return 0;
+    if ((out = malloc((size_t)n + 12)) == NULL)
+        return 0;
     if (t->vt.bracketed_paste)
-        term_send(t, "\033[201~");
+        memcpy(out, "\033[200~", 6), k = 6;
+    for (int i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+
+        if (c == '\r' && i + 1 < n && s[i + 1] == '\n')
+            continue;                   /* CR LF: one Return */
+        if (c == '\n' || c == '\r')
+            out[k++] = '\r';
+        else if (c == '\t' || (c >= 32 && c != 127))
+            out[k++] = (char)c;
+    }
+    if (t->vt.bracketed_paste) {        /* the end mark, even if it was cut short */
+        term_write_all(t, out, (size_t)k);
+        memcpy(out, "\033[201~", 6), k = 6;
+    }
+    term_write_all(t, out, (size_t)k);
+    free(out);
     t->view = 0;
+    return moved;
 }
 
 /* A key, as screen-256color's terminfo says it arrives. Returns whether
@@ -906,7 +967,7 @@ static inline void term_cell_at(const struct term *t, int x, int y, long *line, 
         c = t->vt.cols - 1;
     if (r >= t->vt.rows)
         r = t->vt.rows - 1;
-    *line = sb_count(&t->vt.sb) - t->view + r;
+    *line = t->vt.sb.dropped + sb_count(&t->vt.sb) - t->view + r;
     *col = c;
 }
 

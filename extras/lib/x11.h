@@ -1502,8 +1502,10 @@ static unsigned int xi_solid(unsigned int pixel, int alpha)
  * hinting, no kerning, no CFF (.otf) outlines. */
 
 struct xi_ttf {
-    unsigned char *d;
+    unsigned char *d;                   /* the file, shared by the sizes made from it */
     size_t n;
+    char *name;                         /* as x_font_ttf was given it */
+    int borrowed;                       /* d belongs to another size's face */
     unsigned int glyf, loca, hmtx, cmap;
     int loca_long, cmap_fmt, nhm, nglyphs, upem, ascent, descent, px, qmark;
     int cell_w, cell_asc, cell_desc;    /* x_font_ttf_cell: glyphs cut to this box */
@@ -2219,9 +2221,22 @@ static int xi_font_ttf(const char *file, int px, int cell)
         return 0;
     if ((f = calloc(1, sizeof *f)) == NULL)
         return 0;
-    if ((f->d = xi_read_font(file, &f->n)) == NULL || xi_ttf_parse(f) < 0 ||
+    for (int i = 1; i < xi_nfonts && f->d == NULL; i++) {
+        const struct xi_ttf *o = xi_fonts[i].ttf;
+
+        if (o != NULL && !o->borrowed && strcmp(o->name, file) == 0) {
+            f->d = o->d;                /* the same file at another size: one copy */
+            f->n = o->n;
+            f->borrowed = 1;
+        }
+    }
+    if (f->d == NULL)
+        f->d = xi_read_font(file, &f->n);
+    if (f->d == NULL || xi_ttf_parse(f) < 0 || (f->name = strdup(file)) == NULL ||
         (xi_fonts[xi_nfonts].w = calloc(256, sizeof(short))) == NULL) {
-        free(f->d);
+        if (!f->borrowed)
+            free(f->d);
+        free(f->name);
         free(f);
         return 0;
     }
@@ -2284,7 +2299,7 @@ static void xi_glyph_text(int x, int y, const unsigned char *s8, const unsigned 
 
     if (n > 2000)
         n = 2000;
-    if (n <= 0)
+    if (n <= 0 || f == NULL)
         return;
     if (wide) {                         /* characters it hasn't drawn yet */
         unsigned int add[252];
@@ -2784,6 +2799,7 @@ static inline void x_cursor(int c)
 
 static unsigned int xi_a_clipboard, xi_a_utf8, xi_a_targets, xi_a_text, xi_a_paste;
 static size_t xi_clip_len;
+static int xi_own_sel;                  /* which of them we own: 1 CLIPBOARD, 2 PRIMARY */
 static unsigned int xi_paste_prop;      /* a pasted property to read in x_event */
 
 static void xi_clip_atoms(void)
@@ -2815,6 +2831,7 @@ static inline void x_set_clipboard(const char *text, size_t len)
     free(xi_clip);
     xi_clip = t;
     xi_clip_len = len;
+    xi_own_sel = 3;
     for (int i = 0; i < 2; i++) {
         xi_req(22, 0, 4);               /* SetSelectionOwner (1 is PRIMARY) */
         xi_put32(xi_win);
@@ -2872,6 +2889,8 @@ static void xi_answer_selection(const unsigned char *b)
 
     if (prop == 0)
         prop = target;
+    if (!(xi_own_sel & (sel == xi_a_clipboard ? 1 : sel == 1 ? 2 : 0)))
+        target = 0;                     /* not one we hold: say no */
     if (xi_clip != NULL && target == xi_a_targets) {
         unsigned char list[16];
         unsigned int t[4] = { xi_a_targets, xi_a_utf8, 31, xi_a_text };
@@ -2928,7 +2947,11 @@ static void xi_selection_event(const unsigned char *b)
 {
     switch (b[0] & 0x7f) {
     case 29:                            /* SelectionClear: another program owns it now */
-        if (xi_get32(b + 12) == xi_a_clipboard) {
+        if (xi_get32(b + 12) == xi_a_clipboard)
+            xi_own_sel &= ~1;
+        else if (xi_get32(b + 12) == 1)
+            xi_own_sel &= ~2;
+        if (xi_own_sel == 0) {          /* both gone: the text is no one's */
             free(xi_clip);
             xi_clip = NULL;
         }
@@ -3022,11 +3045,32 @@ static void xi_ttf_free(void)
         if (f != NULL) {
             for (int k = 0; k < 256; k++)
                 free(f->have[k]);
-            free(f->d);
+            if (!f->borrowed)
+                free(f->d);
+            free(f->name);
             free(f);
             xi_fonts[i].ttf = NULL;
         }
+        xi_fonts[i].glyphset = 0;
+        if (i > 0) {
+            free(xi_fonts[i].w);
+            xi_fonts[i].w = NULL;
+        }
     }
+    /* the connection's fonts, pictures, colours, cursors and atoms are
+     * gone with it: an x_open after x_close starts again */
+    xi_nfonts = 1;
+    xi_cur_font = 0;
+    xi_render_state = 0;
+    xi_npicts = xi_pict_next = 0;
+    xi_nsolids = xi_solid_next = 0;
+    xi_cursor_font = 0;
+    xi_cursor_now = 0;
+    memset(xi_cursors, 0, sizeof xi_cursors);
+    memset(xi_cursor_art_tried, 0, sizeof xi_cursor_art_tried);
+    xi_paste_prop = 0;
+    xi_own_sel = 0;
+    xi_a_clipboard = 0;
     free(xi_sc.o.x);
     free(xi_sc.o.y);
     free(xi_sc.o.on);
@@ -3640,6 +3684,6 @@ static inline int x_fd(void) { return xi_fd; }
  * do)? Check it before blocking in your own poll() on x_fd(): x_sync and
  * other round trips read events off the socket into a queue, where poll()
  * can't see them. */
-static inline int x_pending(void) { return xi_qlen > 0 || xi_expose; }
+static inline int x_pending(void) { return xi_qlen > 0 || xi_expose || xi_paste_prop != 0; }
 
 #endif /* DEMO_X11_H */
