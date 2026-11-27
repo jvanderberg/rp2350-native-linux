@@ -25,6 +25,7 @@ cd $W/extras
 for d in games maze pulse samples httpd tm xterm mc; do
 	CC=atrans-gcc CFLAGS="-O2 -Wall" sh $d/build.sh
 done
+CC=atrans-gcc CFLAGS="-Os" sh vim/build.sh
 # wolf3d defines its own bool and false, which C23 (gcc 15's default) has
 CC="atrans-gcc -O2 -std=gnu17" sh wolf3d/build.sh
 CC="atrans-gcc -O2 -Wall -I$PIO/include -L$PIO/lib" sh ws2812/build.sh

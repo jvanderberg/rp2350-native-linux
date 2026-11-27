@@ -23,7 +23,16 @@ step "1/6 native rootfs (Buildroot)"
 step "2/6 ATRANS toolchain, programs, tree"
 atrans/run-build.sh all
 step "3/6 tcc"
-[ -d tcc/tinycc ] || tcc/apply-patches.sh
+scratch_patch=tcc/patches/0019-armv7m-spill-link-text-to-scratch.patch
+if [ ! -d tcc/tinycc ]; then
+  tcc/apply-patches.sh
+elif ! patch -Rs -f --dry-run -d tcc/tinycc -p1 < "$scratch_patch" >/dev/null 2>&1; then
+  if ! patch -s -f --dry-run -d tcc/tinycc -p1 < "$scratch_patch" >/dev/null 2>&1; then
+    echo "The TinyCC tree differs from the bundled patches. Move tcc/tinycc aside and rebuild." >&2
+    exit 1
+  fi
+  patch -f -d tcc/tinycc -p1 < "$scratch_patch"
+fi
 tcc/run-host.sh sh /native/tcc/import-sysroot.sh /native/out/atrans-sysroot.tar.gz
 tcc/run-host.sh sh /native/tcc/host-build.sh
 BOARD_LIBC=/usr/lib/atrans tcc/run-host.sh sh /native/tcc/native-build.sh /native/out/tcc-root

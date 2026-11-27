@@ -172,6 +172,11 @@ board: copy `out/tcc-root` to a directory in the volume, unpack
 `out/atrans-sysroot.tar.gz` into its `usr/lib/atrans`, and give that
 directory to `native-test.sh DIR` and `ROOT=DIR selfhost.sh`.
 
+For a large program, compile each source with `cc -c`, then set
+`TCC_LINK_SCRATCH=/mnt/sd` when linking the objects with `cc`. The bundled
+TinyCC uses the SD card for the merged code and relocation tables during
+the static link. The Vim extra sets this variable for its own build.
+
 ### Flash map
 
 | Address | Contents |

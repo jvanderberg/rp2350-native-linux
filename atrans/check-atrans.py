@@ -32,6 +32,7 @@ BAD = re.compile(
     r"mrc|mcr|mrrc|mcrr|ldc|stc|cdp|wldr|wstr|tmcr|tmrc)")
 UNDEF = re.compile(r"UNDEFINED|undefined|\.inst|<illegal|UNPREDICTABLE|\(bad\)")
 KUSER = re.compile(r"0xffff0f[0-9a-f]{2}\b")
+SYMBOL_ANNOTATION = re.compile(r"(\b[0-9a-f]{8}) <[^>\s]+>")
 
 
 def elf_info(path):
@@ -136,7 +137,9 @@ def check(path):
                 if KUSER.search(insn):
                     bad.append("%s: kuser address %s" % (func, insn))
                 continue
-            if BAD.match(mnem) or UNDEF.search(insn):
+            # Objdump annotates addresses with names such as <illegal_char>.
+            # Check the instruction and diagnostics without those names.
+            if BAD.match(mnem) or UNDEF.search(SYMBOL_ANNOTATION.sub(r"\1", insn)):
                 bad.append("%s: %s" % (func, insn))
     if bad:
         errs.append("%d bad instructions, e.g. %s" % (len(bad), "; ".join(bad[:3])))
