@@ -20,7 +20,9 @@
  * mortar as line segments. The floor is a quad per tile the rays crossed,
  * the starry sky a panorama drawn once into a canvas and copied each frame,
  * and the minimap a canvas that gets only the tiles newly seen. A frame is
- * a few KB, and the picture is sharp at any window size.
+ * a few KB, and the picture is sharp at any window size. Where the server
+ * has RENDER, the text over it is DejaVu Sans, anti-aliased, and the
+ * message box is rounded and lets the maze show through a little.
  */
 #include "../lib/x11.h"
 #include <time.h>
@@ -768,23 +770,29 @@ static void draw_minimap(void)
     x_fill_rect(ox + ppx - sx - mm_s / 2 - 1, oy + ppy - sy - mm_s / 2 - 1, mm_s + 2, mm_s + 2);
 }
 
+static int f_ui;                        /* the text's font: 0 is "fixed" */
+
 static void draw_box(const char *const *lines, int n)
 {
-    int w = 0, lh = 16, bx, by, bw, bh;
+    int w = 0, lh = f_ui ? 18 : 16, bx, by, bw, bh;
 
     for (int i = 0; i < n; i++)
-        if ((int)strlen(lines[i]) > w)
-            w = (int)strlen(lines[i]);
-    bw = w * 6 + 40;
+        if (x_text_width(f_ui, lines[i]) > w)
+            w = x_text_width(f_ui, lines[i]);
+    bw = w + 40;
     bh = n * lh + 24;
     bx = (W - bw) / 2;
     by = (H - bh) / 2;
+    x_text_font(f_ui);
     x_color(x_rgb(235, 235, 240));
-    x_fill_rect(bx, by, bw, bh);
+    if (!x_aa_round_rect(X_FX(bx), X_FX(by), X_FX(bw), X_FX(bh), X_FX(10), 235)) {
+        x_fill_rect(bx, by, bw, bh);
+        x_color(x_rgb(40, 40, 50));
+        x_rect(bx + 3, by + 3, bw - 7, bh - 7);
+    }
     x_color(x_rgb(40, 40, 50));
-    x_rect(bx + 3, by + 3, bw - 7, bh - 7);
     for (int i = 0; i < n; i++)
-        x_text(bx + (bw - (int)strlen(lines[i]) * 6) / 2, by + 12 + lh * i + 12, lines[i]);
+        x_text(bx + (bw - x_text_width(f_ui, lines[i])) / 2, by + 12 + lh * i + 12, lines[i]);
 }
 
 static void draw_hud(long long now)
@@ -806,10 +814,11 @@ static void draw_hud(long long now)
     x_color(x_rgb(30, 30, 38));
     x_fill_rect(0, H - BAR_H, W, BAR_H);
     x_color(x_rgb(220, 220, 228));
+    x_text_font(f_ui);
     x_text(8, H - 5, left);
     /* the right end keeps clear of a resize grip in the corner */
-    if ((int)(strlen(left) + strlen(right)) * 6 + 60 < W)
-        x_text(W - 24 - (int)strlen(right) * 6, H - 5, right);
+    if (x_text_width(f_ui, left) + x_text_width(f_ui, right) + 60 < W)
+        x_text(W - 24 - x_text_width(f_ui, right), H - 5, right);
 
     if (state == S_HINT) {
         static const char *const hint[] = {
@@ -978,6 +987,7 @@ int main(int argc, char **argv)
         return 1;
     make_tables();
     x_window("maze", 640, 400);
+    f_ui = x_font_ttf("DejaVuSans.ttf", 11);
     resized();
     rng_state = bench_frames ? 12345u : ((unsigned int)now_us() | 1u);
     gen_maze();
