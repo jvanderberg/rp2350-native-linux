@@ -382,9 +382,11 @@ static void xi_make_back(int old_w, int old_h)
 
 static unsigned int xi_fence_seq;
 static int xi_fence_on;                 /* a fence's reply is still to come */
-/* Errors for requests from xi_quiet_from on are expected (a font that
- * isn't there) and not reported, while xi_quiet is set. */
-static unsigned int xi_quiet_from;
+/* Errors for requests xi_quiet_from to xi_quiet_to are expected (a font
+ * that isn't there) and not reported, while xi_quiet is set; others, such
+ * as those of requests sent while handling an event that came in during
+ * the wait, still are. */
+static unsigned int xi_quiet_from, xi_quiet_to;
 static int xi_quiet;
 
 static void xi_handle(const unsigned char *b)
@@ -397,7 +399,8 @@ static void xi_handle(const unsigned char *b)
     }
     switch (b[0] & 0x7f) {
     case 0:
-        if (!xi_quiet || ((xi_get16(b + 2) - xi_quiet_from) & 0x8000))
+        if (!xi_quiet || ((xi_get16(b + 2) - xi_quiet_from) & 0xffff) >
+                             ((xi_quiet_to - xi_quiet_from) & 0xffff))
             fprintf(stderr, "x11: error %d from request %d\n", b[1], b[10]);
         break;
     case 2:
@@ -1065,6 +1068,13 @@ static int xi_font_reply(int f, unsigned int seq)
     return ok ? 0 : -1;
 }
 
+/* CloseFont: a font that opened, but isn't used. */
+static void xi_close_font(unsigned int id)
+{
+    xi_req(46, 0, 2);
+    xi_put32(id);
+}
+
 /* OpenFont font id by name or pattern (the first font that matches). */
 static void xi_open_font(unsigned int id, const char *name)
 {
@@ -1094,6 +1104,7 @@ static inline int x_font(const char *pattern)
     xi_quiet = 1;
     xi_open_font(xi_fonts[f].id, pattern);
     seq = xi_font_ask(f);
+    xi_quiet_to = seq;
     if (xi_font_reply(f, seq) < 0) {
         xi_quiet = 0;
         free(xi_fonts[f].w);
@@ -1117,12 +1128,16 @@ static unsigned int xi_cell_ask(int f, const char *name)
     return xi_last();
 }
 
+/* 0, or -1 if the font didn't open (an error), or -2 if it opened but
+ * can't be used (no width): then it has to be closed. */
 static int xi_cell_reply(int f, unsigned int seq)
 {
     unsigned char b[32];
 
-    if (xi_reply(seq, b, NULL) != 0 || (int)xi_get32(b + 16) <= 0)
+    if (xi_reply(seq, b, NULL) != 0)
         return -1;
+    if ((int)xi_get32(b + 16) <= 0)
+        return -2;
     xi_fonts[f].ascent = (short)xi_get16(b + 8);
     xi_fonts[f].descent = (short)xi_get16(b + 10);
     xi_fonts[f].defw = (int)xi_get32(b + 16);
@@ -1145,7 +1160,7 @@ static inline int x_font_cell(const char *pattern)
     unsigned char b[32], *x = NULL;
     unsigned int n = (unsigned int)strlen(pattern), found, s_cell, s_list;
     char name[256];
-    int f = xi_nfonts;
+    int f = xi_nfonts, r;
 
     if (xi_nfonts >= X_FONTS || n > 255)
         return 0;
@@ -1161,13 +1176,17 @@ static inline int x_font_cell(const char *pattern)
     for (; n & 3; n++)
         xi_put8(0);
     s_list = xi_last();
-    if (xi_cell_reply(f, s_cell) == 0) {
+    xi_quiet_to = s_list;
+    r = xi_cell_reply(f, s_cell);
+    if (r == 0) {
         xi_reply(s_list, b, NULL);      /* here already: same trip */
         xi_quiet = 0;
         xi_nfonts++;
         return f;
     }
     found = xi_reply(s_list, b, &x) == 0 ? xi_get16(b + 8) : 0;
+    if (r == -2)
+        xi_close_font(xi_fonts[f].id);  /* the pattern did open, after all */
     if (found == 0 || x == NULL) {
         free(x);
         xi_quiet = 0;
@@ -1177,8 +1196,13 @@ static inline int x_font_cell(const char *pattern)
     memcpy(name, x + 1, n);
     name[n] = 0;
     free(x);
-    xi_fonts[f].id = xi_new_id();       /* the first id may be open after all */
-    if (xi_cell_reply(f, xi_cell_ask(f, name)) != 0) {
+    xi_fonts[f].id = xi_new_id();
+    xi_quiet_from = (xi_seq + 1) & 0xffff;
+    s_cell = xi_cell_ask(f, name);
+    xi_quiet_to = s_cell;
+    if ((r = xi_cell_reply(f, s_cell)) != 0) {
+        if (r == -2)
+            xi_close_font(xi_fonts[f].id);
         xi_quiet = 0;
         return 0;                       /* listed, but it won't open: none */
     }
@@ -2332,9 +2356,12 @@ static unsigned char *xi_read_font(const char *name, size_t *len)
  * name such as "DejaVuSans.ttf" (the board has DejaVuSans, -Bold,
  * DejaVuSansMono and -Bold in /usr/share/fonts/dejavu). Its text is
  * anti-aliased, in x_text and x_text16, through x_text_font as any other
- * font. Its Latin-1 characters are rendered here and sent to the server
- * once (on the board, at 13 pixels: 15 ms built with gcc -O2, 70 with
- * tcc, and about 24 KB); others the first time x_text16 draws them. 0 ("fixed") if the server has no RENDER or the file
+ * font. Each character is rendered and sent to the server once, the
+ * first time x_text or x_text16 draws it, so the first frames that draw
+ * text carry its glyphs: on a slow link that is only those on the screen,
+ * a few dozen, rather than all of Latin-1 when the font is opened (on the
+ * board, at 13 pixels, those took 15 ms built with gcc -O2, 70 with tcc,
+ * and about 24 KB). 0 ("fixed") if the server has no RENDER or the file
  * can't be read. */
 static int xi_font_ttf(const char *file, int px, int cell)
 {
@@ -3568,6 +3595,26 @@ static inline void x_fence_wait(void)
         xi_handle(b);
     }
     xi_fence_on = 0;
+}
+
+/* Whether the last fence's reply is still to come: reads what has
+ * arrived, but never waits. A program that draws only to show progress
+ * can skip a frame while one is still on its way, instead of waiting. */
+static inline int x_fence_busy(void)
+{
+    unsigned char b[32];
+
+    while (xi_fence_on && !xi_dead) {
+        struct pollfd p;
+
+        p.fd = xi_fd;
+        p.events = POLLIN;
+        p.revents = 0;
+        if (poll(&p, 1, 0) <= 0 || xi_message(b, NULL) < 0)
+            break;
+        xi_handle(b);
+    }
+    return xi_fence_on && !xi_dead;
 }
 
 static inline void x_fence(void)

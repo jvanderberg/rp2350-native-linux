@@ -796,11 +796,16 @@ void dlg_paint(void)
         dlg_widgets(&dstack[i]);
 }
 
+/* The progress box of a long job (fileops.c), up to ten times a second:
+ * skipped while the last one is still on its way, so that on a slow link
+ * the job never waits for it; what it shows is caught up the next time. */
 void dlg_redraw(void)
 {
+    if (x_fence_busy())
+        return;
     dlg_paint();
     x_present();
-    x_fence();                          /* progress: don't wait on each */
+    x_fence();
 }
 
 static int dlg_hit(struct dlgview *v, int x, int y)
