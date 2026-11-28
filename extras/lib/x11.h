@@ -382,6 +382,12 @@ static void xi_make_back(int old_w, int old_h)
 
 static unsigned int xi_fence_seq;
 static int xi_fence_on;                 /* a fence's reply is still to come */
+/* Errors for requests xi_quiet_from to xi_quiet_to are expected (a font
+ * that isn't there) and not reported, while xi_quiet is set; others, such
+ * as those of requests sent while handling an event that came in during
+ * the wait, still are. */
+static unsigned int xi_quiet_from, xi_quiet_to;
+static int xi_quiet;
 
 static void xi_handle(const unsigned char *b)
 {
@@ -393,7 +399,9 @@ static void xi_handle(const unsigned char *b)
     }
     switch (b[0] & 0x7f) {
     case 0:
-        fprintf(stderr, "x11: error %d from request %d\n", b[1], b[10]);
+        if (!xi_quiet || ((xi_get16(b + 2) - xi_quiet_from) & 0xffff) >
+                             ((xi_quiet_to - xi_quiet_from) & 0xffff))
+            fprintf(stderr, "x11: error %d from request %d\n", b[1], b[10]);
         break;
     case 2:
         xi_push(XE_KEY_DOWN, xi_keysym(b[1], (int)xi_get16(b + 28)), 0, x, y, (int)xi_get16(b + 28));
@@ -463,14 +471,16 @@ static int xi_message(unsigned char *b, unsigned char **extra)
     return b[0] & 0x7f;
 }
 
-/* Send what is buffered and wait for the reply to the last request; events
- * that arrive first are queued. Returns 0, or -1 on an error or lost link. */
-static int xi_roundtrip(unsigned char *b, unsigned char **extra)
-{
-    /* Remember which reply: handling an event below can send requests
-     * (repainting after Expose, a new back buffer after a resize). */
-    unsigned int want = xi_seq & 0xffff;
+/* The sequence number of the last request, to wait for its reply later. */
+static unsigned int xi_last(void) { return xi_seq & 0xffff; }
 
+/* Send what is buffered and wait for the reply to request want (from
+ * xi_last); events that arrive first are queued. Replies come in order, so
+ * several requests can be sent and their replies waited for one after
+ * another, all in one round trip. Returns 0, or -1 on an error or lost
+ * link. */
+static int xi_reply(unsigned int want, unsigned char *b, unsigned char **extra)
+{
     x_flush();
     for (;;) {
         int t = xi_message(b, extra);
@@ -492,9 +502,17 @@ static int xi_roundtrip(unsigned char *b, unsigned char **extra)
     }
 }
 
-static unsigned int xi_atom(const char *name)
+/* Send what is buffered and wait for the reply to the last request. */
+static int xi_roundtrip(unsigned char *b, unsigned char **extra)
 {
-    unsigned char b[32];
+    /* Remember which reply: handling an event while waiting can send
+     * requests (repainting after Expose, a new back buffer after a resize). */
+    return xi_reply(xi_last(), b, extra);
+}
+
+/* Ask for an atom; its reply's sequence number, for xi_atom_reply. */
+static unsigned int xi_atom_ask(const char *name)
+{
     unsigned int n = (unsigned int)strlen(name);
 
     xi_req(16, 0, 2 + (n + 3) / 4);     /* InternAtom */
@@ -504,7 +522,14 @@ static unsigned int xi_atom(const char *name)
         xi_put8((unsigned char)name[i]);
     while (n++ & 3)
         xi_put8(0);
-    return xi_roundtrip(b, NULL) < 0 ? 0 : xi_get32(b + 8);
+    return xi_last();
+}
+
+static unsigned int xi_atom_reply(unsigned int seq)
+{
+    unsigned char b[32];
+
+    return xi_reply(seq, b, NULL) < 0 ? 0 : xi_get32(b + 8);
 }
 
 static int xi_connect_unix(const char *path)
@@ -706,6 +731,7 @@ static int xi_parse_setup(const unsigned char *b, size_t len)
 static inline int x_open(const char *display)
 {
     unsigned char head[8], b[32], *setup, *syms = NULL, cookie[64];
+    unsigned int s_map, s_proto, s_delete;
     size_t len, clen;
     const char *d = display != NULL ? display : getenv("DISPLAY");
 
@@ -760,11 +786,24 @@ static inline int x_open(const char *display)
     }
     free(setup);
 
+    /* Everything x_open asks for goes in one batch, so that on a slow link
+     * it costs one round trip rather than one for each answer. */
     xi_req(101, 0, 2);                  /* GetKeyboardMapping */
     xi_put8((unsigned int)xi_min_kc);
     xi_put8((unsigned int)xi_kc_count);
     xi_put16(0);
-    if (xi_roundtrip(b, &syms) == 0 && syms != NULL) {
+    s_map = xi_last();
+    xi_font = xi_new_id();
+    xi_req(45, 0, 3 + 2);               /* OpenFont "fixed" */
+    xi_put32(xi_font);
+    xi_put16(5);
+    xi_put16(0);
+    xi_put32('f' | 'i' << 8 | 'x' << 16 | (unsigned int)'e' << 24);
+    xi_put32('d');
+    s_proto = xi_atom_ask("WM_PROTOCOLS");
+    s_delete = xi_atom_ask("WM_DELETE_WINDOW");
+
+    if (xi_reply(s_map, b, &syms) == 0 && syms != NULL) {
         size_t n = (size_t)xi_get32(b + 4);
 
         xi_syms_per = b[1];
@@ -774,16 +813,8 @@ static inline int x_open(const char *display)
                 xi_keysyms[i] = xi_get32(syms + i * 4);
     }
     free(syms);
-
-    xi_font = xi_new_id();
-    xi_req(45, 0, 3 + 2);               /* OpenFont "fixed" */
-    xi_put32(xi_font);
-    xi_put16(5);
-    xi_put16(0);
-    xi_put32('f' | 'i' << 8 | 'x' << 16 | (unsigned int)'e' << 24);
-    xi_put32('d');
-    xi_wm_protocols = xi_atom("WM_PROTOCOLS");
-    xi_wm_delete = xi_atom("WM_DELETE_WINDOW");
+    xi_wm_protocols = xi_atom_reply(s_proto);
+    xi_wm_delete = xi_atom_reply(s_delete);
     return xi_dead ? -1 : 0;
 }
 
@@ -988,22 +1019,27 @@ static struct {
 } xi_fonts[X_FONTS];
 static int xi_nfonts = 1, xi_cur_font;
 
-/* Read a font's metrics (QueryFont) into slot f. */
-static void xi_font_metrics(int f)
+/* Ask for the metrics of the font in slot f (QueryFont); the reply's
+ * sequence number, for xi_font_reply. */
+static unsigned int xi_font_ask(int f)
 {
-    unsigned char b[32], *x = NULL;
-
     xi_req(47, 0, 2);                   /* QueryFont */
     xi_put32(xi_fonts[f].id);
-    if (xi_roundtrip(b, &x) != 0 || x == NULL) {
+    return xi_last();
+}
+
+/* Read the font's metrics into slot f from QueryFont's reply, b and x
+ * (the reply from byte 32 on); defaults if there is no reply (x NULL). */
+static void xi_font_parse(int f, const unsigned char *b, const unsigned char *x)
+{
+    if (x == NULL) {
         xi_fonts[f].ascent = 11;
         xi_fonts[f].descent = 2;
         xi_fonts[f].defw = 6;
-        free(x);
         return;
     }
-    /* x is the reply from byte 32 on: max-bounds' width is at 28 of the
-     * reply, so in b; the rest of the fixed part follows in x. */
+    /* max-bounds' width is at 28 of the reply, so in b; the rest of the
+     * fixed part follows in x. */
     xi_fonts[f].defw = (short)xi_get16(b + 28);
     xi_fonts[f].minc = (int)xi_get16(x + 8);
     xi_fonts[f].maxc = (int)xi_get16(x + 10);
@@ -1018,56 +1054,120 @@ static void xi_font_metrics(int f)
             for (unsigned int i = 0; i < m; i++)
                 xi_fonts[f].w[i] = (short)xi_get16(ci + 12 * i + 4);
     }
-    free(x);
 }
 
-static inline int x_font(const char *pattern)
+/* Wait for the reply to xi_font_ask (seq) and read it into slot f; 0, or
+ * -1 if the font isn't there (its slot then has default metrics). */
+static int xi_font_reply(int f, unsigned int seq)
 {
     unsigned char b[32], *x = NULL;
-    unsigned int n = (unsigned int)strlen(pattern), found;
-    int f;
+    int ok = xi_reply(seq, b, &x) == 0 && x != NULL;
 
-    if (xi_nfonts >= X_FONTS || n > 255)
-        return 0;
-    xi_req(49, 0, 2 + (n + 3) / 4);     /* ListFonts: is there one? */
-    xi_put16(1);
-    xi_put16(n);
-    for (unsigned int i = 0; i < n; i++)
-        xi_put8((unsigned char)pattern[i]);
-    for (; n & 3; n++)
-        xi_put8(0);
-    found = xi_roundtrip(b, &x) == 0 ? xi_get16(b + 8) : 0;
+    xi_font_parse(f, b, ok ? x : NULL);
     free(x);
-    if (found == 0)
-        return 0;
-    f = xi_nfonts++;
-    xi_fonts[f].id = xi_new_id();
-    n = (unsigned int)strlen(pattern);
-    xi_req(45, 0, 3 + (n + 3) / 4);     /* OpenFont, the first that matches */
-    xi_put32(xi_fonts[f].id);
+    return ok ? 0 : -1;
+}
+
+/* CloseFont: a font that opened, but isn't used. */
+static void xi_close_font(unsigned int id)
+{
+    xi_req(46, 0, 2);
+    xi_put32(id);
+}
+
+/* OpenFont font id by name or pattern (the first font that matches). */
+static void xi_open_font(unsigned int id, const char *name)
+{
+    unsigned int n = (unsigned int)strlen(name);
+
+    xi_req(45, 0, 3 + (n + 3) / 4);
+    xi_put32(id);
     xi_put16(n);
     xi_put16(0);
     for (unsigned int i = 0; i < n; i++)
-        xi_put8((unsigned char)pattern[i]);
+        xi_put8((unsigned char)name[i]);
     for (; n & 3; n++)
         xi_put8(0);
-    xi_font_metrics(f);
+}
+
+/* Fonts are opened and measured in one round trip: OpenFont and QueryFont
+ * go together, and a font that isn't there fails both quietly. */
+static inline int x_font(const char *pattern)
+{
+    int f = xi_nfonts;
+    unsigned int seq;
+
+    if (xi_nfonts >= X_FONTS || strlen(pattern) > 255)
+        return 0;
+    xi_fonts[f].id = xi_new_id();
+    xi_quiet_from = (xi_seq + 1) & 0xffff;
+    xi_quiet = 1;
+    xi_open_font(xi_fonts[f].id, pattern);
+    seq = xi_font_ask(f);
+    xi_quiet_to = seq;
+    if (xi_font_reply(f, seq) < 0) {
+        xi_quiet = 0;
+        free(xi_fonts[f].w);
+        memset(&xi_fonts[f], 0, sizeof xi_fonts[f]);
+        return 0;
+    }
+    xi_quiet = 0;
+    xi_nfonts++;
     return f;
+}
+
+/* Open font id by name and measure one "M" in it into slot f (its
+ * QueryTextExtents reply's sequence number, for xi_cell_reply). */
+static unsigned int xi_cell_ask(int f, const char *name)
+{
+    xi_open_font(xi_fonts[f].id, name);
+    xi_req(48, 1, 2 + 1);               /* QueryTextExtents of "M" (odd length) */
+    xi_put32(xi_fonts[f].id);
+    xi_put16('M');
+    xi_put16(0);
+    return xi_last();
+}
+
+/* 0, or -1 if the font didn't open (an error), or -2 if it opened but
+ * can't be used (no width): then it has to be closed. */
+static int xi_cell_reply(int f, unsigned int seq)
+{
+    unsigned char b[32];
+
+    if (xi_reply(seq, b, NULL) != 0)
+        return -1;
+    if ((int)xi_get32(b + 16) <= 0)
+        return -2;
+    xi_fonts[f].ascent = (short)xi_get16(b + 8);
+    xi_fonts[f].descent = (short)xi_get16(b + 10);
+    xi_fonts[f].defw = (int)xi_get32(b + 16);
+    xi_fonts[f].minc = 1;               /* no table: every glyph is defw wide */
+    xi_fonts[f].maxc = 0;
+    return 0;
 }
 
 /* A fixed-width font, for a grid of characters (a terminal), which may be
  * a large Unicode one: QueryFont would send the metrics of every glyph,
  * which can be hundreds of KB, so this measures one "M" instead
- * (QueryTextExtents). All its characters are then that wide. */
+ * (QueryTextExtents). All its characters are then that wide.
+ *
+ * It opens the pattern itself and, in the same round trip, lists the
+ * fonts that match it. A scalable font won't open from a pattern with
+ * wildcards: then it is opened by the name the server listed, which takes
+ * one more trip. */
 static inline int x_font_cell(const char *pattern)
 {
     unsigned char b[32], *x = NULL;
-    unsigned int n = (unsigned int)strlen(pattern), found;
+    unsigned int n = (unsigned int)strlen(pattern), found, s_cell, s_list;
     char name[256];
-    int f;
+    int f = xi_nfonts, r;
 
     if (xi_nfonts >= X_FONTS || n > 255)
         return 0;
+    xi_fonts[f].id = xi_new_id();
+    xi_quiet_from = (xi_seq + 1) & 0xffff;
+    xi_quiet = 1;
+    s_cell = xi_cell_ask(f, pattern);
     xi_req(49, 0, 2 + (n + 3) / 4);     /* ListFonts: the first that matches */
     xi_put16(1);
     xi_put16(n);
@@ -1075,54 +1175,52 @@ static inline int x_font_cell(const char *pattern)
         xi_put8((unsigned char)pattern[i]);
     for (; n & 3; n++)
         xi_put8(0);
-    found = xi_roundtrip(b, &x) == 0 ? xi_get16(b + 8) : 0;
+    s_list = xi_last();
+    xi_quiet_to = s_list;
+    r = xi_cell_reply(f, s_cell);
+    if (r == 0) {
+        xi_reply(s_list, b, NULL);      /* here already: same trip */
+        xi_quiet = 0;
+        xi_nfonts++;
+        return f;
+    }
+    found = xi_reply(s_list, b, &x) == 0 ? xi_get16(b + 8) : 0;
+    if (r == -2)
+        xi_close_font(xi_fonts[f].id);  /* the pattern did open, after all */
     if (found == 0 || x == NULL) {
         free(x);
+        xi_quiet = 0;
         return 0;
     }
-    /* Open it by the name the server gave: a scalable font won't open
-     * from a pattern with wildcards. */
     n = x[0];
     memcpy(name, x + 1, n);
     name[n] = 0;
     free(x);
-    x = NULL;
-    f = xi_nfonts++;
     xi_fonts[f].id = xi_new_id();
-    xi_req(45, 0, 3 + (n + 3) / 4);     /* OpenFont */
-    xi_put32(xi_fonts[f].id);
-    xi_put16(n);
-    xi_put16(0);
-    for (unsigned int i = 0; i < n; i++)
-        xi_put8((unsigned char)name[i]);
-    for (; n & 3; n++)
-        xi_put8(0);
-    xi_req(48, 1, 2 + 1);               /* QueryTextExtents of "M" (odd length) */
-    xi_put32(xi_fonts[f].id);
-    xi_put16('M');
-    xi_put16(0);
-    if (xi_roundtrip(b, &x) != 0 || (int)xi_get32(b + 16) <= 0) {
-        free(x);
-        xi_nfonts--;                    /* listed, but it won't open: none */
-        return 0;
+    xi_quiet_from = (xi_seq + 1) & 0xffff;
+    s_cell = xi_cell_ask(f, name);
+    xi_quiet_to = s_cell;
+    if ((r = xi_cell_reply(f, s_cell)) != 0) {
+        if (r == -2)
+            xi_close_font(xi_fonts[f].id);
+        xi_quiet = 0;
+        return 0;                       /* listed, but it won't open: none */
     }
-    xi_fonts[f].ascent = (short)xi_get16(b + 8);
-    xi_fonts[f].descent = (short)xi_get16(b + 10);
-    xi_fonts[f].defw = (int)xi_get32(b + 16);
-    free(x);
-    xi_fonts[f].minc = 1;               /* no table: every glyph is defw wide */
-    xi_fonts[f].maxc = 0;
+    xi_quiet = 0;
+    xi_nfonts++;
     return f;
 }
 
-/* Slot 0 is "fixed", opened by x_open; its metrics are read when needed. */
+/* Slot 0 is "fixed", opened by x_open; its metrics are read when needed
+ * (not before: on many servers "fixed" is a large Unicode font, whose
+ * QueryFont reply is hundreds of KB). */
 static int xi_font_ready(int f)
 {
     if (f < 0 || f >= xi_nfonts)
         f = 0;
     if (f == 0 && xi_fonts[0].id == 0) {
         xi_fonts[0].id = xi_font;
-        xi_font_metrics(0);
+        (void)xi_font_reply(0, xi_font_ask(0));
     }
     return f;
 }
@@ -1334,106 +1432,106 @@ static x_fixed xi_hypot(x_fixed dx, x_fixed dy)
     return (x_fixed)(xi_isqrt(a * a + b * b) << sh);
 }
 
-/* Find RENDER (0.10 or later, for solid fills) and the picture formats for
- * coverage (A8), for this display's pixels and for cursors (ARGB32). */
+/* Ask whether the server has extension name; the reply's sequence number. */
+static unsigned int xi_ext_ask(const char *name)
+{
+    unsigned int n = (unsigned int)strlen(name);
+
+    xi_req(98, 0, 2 + (n + 3) / 4);     /* QueryExtension */
+    xi_put16(n);
+    xi_put16(0);
+    for (unsigned int i = 0; i < n; i++)
+        xi_put8((unsigned char)name[i]);
+    for (; n & 3; n++)
+        xi_put8(0);
+    return xi_last();
+}
+
+/* Its major opcode, or 0 if the server hasn't got it. */
+static int xi_ext_reply(unsigned int seq)
+{
+    unsigned char b[32];
+
+    return xi_reply(seq, b, NULL) == 0 && b[8] ? b[9] : 0;
+}
+
+/*
+ * Find RENDER (0.10 or later, for solid fills) and the picture formats for
+ * coverage (A8), for this display's pixels and for cursors (ARGB32); and
+ * HIDPI, an extension of servers that draw at a finer resolution than X
+ * pixels (crystalX on a 2x screen): its QueryVersion gives that scale, and
+ * SetGlyphSetScale lets a glyph set's images, origins and advances be in
+ * 1/scale X pixels, so TrueType text is rendered at the screen's own
+ * resolution instead of enlarged. X11_HIDPI=0 leaves HIDPI alone.
+ *
+ * Two round trips: both extensions are asked about together, then RENDER's
+ * version and formats and HIDPI's version together.
+ */
 static int xi_render_init(void)
 {
     unsigned char b[32], *x = NULL;
-    unsigned int n, len;
-
-    xi_req(98, 0, 2 + 2);               /* QueryExtension "RENDER" */
-    xi_put16(6);
-    xi_put16(0);
-    for (const char *p = "RENDER"; *p != '\0'; p++)
-        xi_put8((unsigned char)*p);
-    xi_put16(0);
-    if (xi_roundtrip(b, &x) != 0 || !b[8]) {
-        free(x);
-        return 0;
-    }
-    free(x);
-    x = NULL;
-    xi_rmajor = b[9];
-    xi_req(xi_rmajor, 0, 3);            /* RenderQueryVersion 0.11 */
-    xi_put32(0);
-    xi_put32(11);
-    if (xi_roundtrip(b, &x) != 0) {
-        free(x);
-        return 0;
-    }
-    free(x);
-    x = NULL;
-    if (xi_get32(b + 8) == 0 && xi_get32(b + 12) < 10)
-        return 0;
-    xi_req(xi_rmajor, 1, 1);            /* RenderQueryPictFormats */
-    if (xi_roundtrip(b, &x) != 0 || x == NULL) {
-        free(x);
-        return 0;
-    }
-    n = xi_get32(b + 8);
-    len = xi_get32(b + 4) * 4;
-    for (unsigned int i = 0; i < n && 28 * i + 28 <= len; i++) {
-        const unsigned char *f = x + 28 * i;
-        unsigned int id = xi_get32(f), depth = f[5];
-        unsigned int rs = xi_get16(f + 8), rm = xi_get16(f + 10);
-        unsigned int gs = xi_get16(f + 12), gm = xi_get16(f + 14);
-        unsigned int bs = xi_get16(f + 16), bm = xi_get16(f + 18);
-        unsigned int as = xi_get16(f + 20), am = xi_get16(f + 22);
-
-        if (f[4] != 1)
-            continue;                   /* not Direct */
-        if (depth == 8 && am == 0xff && rm == 0 && gm == 0 && bm == 0)
-            xi_pf_a8 = id;
-        if (depth == 32 && as == 24 && am == 0xff && rs == 16 && rm == 0xff &&
-            gs == 8 && gm == 0xff && bs == 0 && bm == 0xff)
-            xi_pf_argb = id;
-        if (depth == xi_depth && rm << rs == xi_rmask && gm << gs == xi_gmask &&
-            bm << bs == xi_bmask)
-            xi_pf_rgb = id;
-    }
-    free(x);
-    return xi_pf_a8 != 0 && xi_pf_rgb != 0;
-}
-
-/* HIDPI, an extension of servers that draw at a finer resolution than X
- * pixels (crystalX on a 2x screen): QueryVersion gives that scale, and
- * SetGlyphSetScale lets a glyph set's images, origins and advances be in
- * 1/scale X pixels, so TrueType text is rendered at the screen's own
- * resolution instead of enlarged. X11_HIDPI=0 leaves it alone. */
-static void xi_hidpi_init(void)
-{
-    unsigned char b[32], *x = NULL;
     const char *env = getenv("X11_HIDPI");
-    int op;
+    int use_hidpi = env == NULL || strcmp(env, "0") != 0, hop = 0, ok;
+    unsigned int s_r, s_h = 0, s_v, s_f, s_hv = 0, n, len;
 
     xi_hidpi_op = 0;
     xi_hidpi = 1;
-    if (env != NULL && strcmp(env, "0") == 0)
-        return;
-    xi_req(98, 0, 2 + 2);               /* QueryExtension "HIDPI" */
-    xi_put16(5);
-    xi_put16(0);
-    for (const char *p = "HIDPI"; *p != '\0'; p++)
-        xi_put8((unsigned char)*p);
-    xi_put8(0);
-    xi_put16(0);
-    if (xi_roundtrip(b, &x) != 0 || !b[8]) {
-        free(x);
-        return;
-    }
-    free(x);
-    x = NULL;
-    op = b[9];
-    xi_req(op, 0, 1);                   /* HIDPIQueryVersion */
-    if (xi_roundtrip(b, &x) == 0 && xi_get16(b + 8) == 1) {
-        unsigned int s = xi_get32(b + 12);
+    s_r = xi_ext_ask("RENDER");
+    if (use_hidpi)
+        s_h = xi_ext_ask("HIDPI");
+    xi_rmajor = xi_ext_reply(s_r);
+    if (use_hidpi)
+        hop = xi_ext_reply(s_h);
+    if (xi_rmajor == 0)
+        return 0;
 
-        if (s >= 2 && s <= 8) {
-            xi_hidpi_op = op;
-            xi_hidpi = (int)s;
+    xi_req(xi_rmajor, 0, 3);            /* RenderQueryVersion 0.11 */
+    xi_put32(0);
+    xi_put32(11);
+    s_v = xi_last();
+    xi_req(xi_rmajor, 1, 1);            /* RenderQueryPictFormats */
+    s_f = xi_last();
+    if (hop != 0) {
+        xi_req(hop, 0, 1);              /* HIDPIQueryVersion */
+        s_hv = xi_last();
+    }
+    ok = xi_reply(s_v, b, NULL) == 0 && !(xi_get32(b + 8) == 0 && xi_get32(b + 12) < 10);
+    if (xi_reply(s_f, b, &x) != 0 || x == NULL)
+        ok = 0;
+    if (ok) {
+        n = xi_get32(b + 8);
+        len = xi_get32(b + 4) * 4;
+        for (unsigned int i = 0; i < n && 28 * i + 28 <= len; i++) {
+            const unsigned char *f = x + 28 * i;
+            unsigned int id = xi_get32(f), depth = f[5];
+            unsigned int rs = xi_get16(f + 8), rm = xi_get16(f + 10);
+            unsigned int gs = xi_get16(f + 12), gm = xi_get16(f + 14);
+            unsigned int bs = xi_get16(f + 16), bm = xi_get16(f + 18);
+            unsigned int as = xi_get16(f + 20), am = xi_get16(f + 22);
+
+            if (f[4] != 1)
+                continue;               /* not Direct */
+            if (depth == 8 && am == 0xff && rm == 0 && gm == 0 && bm == 0)
+                xi_pf_a8 = id;
+            if (depth == 32 && as == 24 && am == 0xff && rs == 16 && rm == 0xff &&
+                gs == 8 && gm == 0xff && bs == 0 && bm == 0xff)
+                xi_pf_argb = id;
+            if (depth == xi_depth && rm << rs == xi_rmask && gm << gs == xi_gmask &&
+                bm << bs == xi_bmask)
+                xi_pf_rgb = id;
         }
     }
     free(x);
+    ok = ok && xi_pf_a8 != 0 && xi_pf_rgb != 0;
+    if (hop != 0 && xi_reply(s_hv, b, NULL) == 0 && ok && xi_get16(b + 8) == 1) {
+        unsigned int sc = xi_get32(b + 12);
+
+        if (sc >= 2 && sc <= 8) {
+            xi_hidpi_op = hop;
+            xi_hidpi = (int)sc;
+        }
+    }
+    return ok;
 }
 
 /* Whether the server has RENDER, so that the calls below can draw. */
@@ -1441,8 +1539,6 @@ static inline int x_has_render(void)
 {
     if (xi_render_state == 0) {
         xi_render_state = xi_fd >= 0 && !xi_dead && xi_render_init() ? 1 : -1;
-        if (xi_render_state > 0)
-            xi_hidpi_init();
     }
     return xi_render_state > 0;
 }
@@ -2260,15 +2356,17 @@ static unsigned char *xi_read_font(const char *name, size_t *len)
  * name such as "DejaVuSans.ttf" (the board has DejaVuSans, -Bold,
  * DejaVuSansMono and -Bold in /usr/share/fonts/dejavu). Its text is
  * anti-aliased, in x_text and x_text16, through x_text_font as any other
- * font. Its Latin-1 characters are rendered here and sent to the server
- * once (on the board, at 13 pixels: 15 ms built with gcc -O2, 70 with
- * tcc, and about 24 KB); others the first time x_text16 draws them. 0 ("fixed") if the server has no RENDER or the file
+ * font. Each character is rendered and sent to the server once, the
+ * first time x_text or x_text16 draws it, so the first frames that draw
+ * text carry its glyphs: on a slow link that is only those on the screen,
+ * a few dozen, rather than all of Latin-1 when the font is opened (on the
+ * board, at 13 pixels, those took 15 ms built with gcc -O2, 70 with tcc,
+ * and about 24 KB). 0 ("fixed") if the server has no RENDER or the file
  * can't be read. */
 static int xi_font_ttf(const char *file, int px, int cell)
 {
     struct xi_ttf *f;
-    unsigned int cps[224];
-    int n = 0, fi;
+    int fi;
 
     if (xi_nfonts >= X_FONTS || px < 4 || px > 96 || !x_has_render())
         return 0;
@@ -2320,10 +2418,6 @@ static int xi_font_ttf(const char *file, int px, int cell)
 
         xi_fonts[fi].w[c] = (short)((xi_ttf_advance(f, g ? g : f->qmark) * px * 2 + f->upem) /
                                     (2 * f->upem));
-        if ((c >= 32 && c < 127) || c >= 160) {
-            cps[n++] = c;
-            xi_ttf_mark(f, c);
-        }
     }
     xi_fonts[fi].defw = xi_fonts[fi].w['?'];
     if (cell) {
@@ -2331,7 +2425,8 @@ static int xi_font_ttf(const char *file, int px, int cell)
         f->cell_asc = xi_fonts[fi].ascent * f->gs;
         f->cell_desc = xi_fonts[fi].descent * f->gs;
     }
-    xi_ttf_add(fi, cps, n);
+    /* No glyphs yet: each is sent the first time it is drawn (x_text),
+     * which on a slow link is a few dozen per font, not all of Latin-1. */
     return fi;
 }
 
@@ -2363,14 +2458,16 @@ static void xi_glyph_text(int x, int y, const unsigned char *s8, const unsigned 
         n = 2000;
     if (n <= 0 || f == NULL)
         return;
-    if (wide) {                         /* characters it hasn't drawn yet */
+    {                                   /* characters it hasn't drawn yet */
         unsigned int add[252];
         int k = 0;
 
         for (int i = 0; i < n; i++) {
-            unsigned int c = s16[i];
+            unsigned int c = wide ? s16[i] : s8[i];
 
-            if (c >= 32 && c <= 0xffff && !(c >= 127 && c < 160) && !xi_ttf_has(f, c)) {
+            if (c < 32 || c > 0xffff || (c >= 127 && c < 160))
+                c = '?';                /* drawn as '?', below */
+            if (!xi_ttf_has(f, c)) {
                 xi_ttf_mark(f, c);
                 add[k++] = c;
                 if (k == 252) {
@@ -2872,13 +2969,20 @@ static unsigned int xi_paste_prop;      /* a pasted property to read in x_event 
 
 static void xi_clip_atoms(void)
 {
+    unsigned int s[5];
+
     if (xi_a_clipboard != 0)
         return;
-    xi_a_clipboard = xi_atom("CLIPBOARD");
-    xi_a_utf8 = xi_atom("UTF8_STRING");
-    xi_a_targets = xi_atom("TARGETS");
-    xi_a_text = xi_atom("TEXT");
-    xi_a_paste = xi_atom("X11_H_PASTE");
+    s[0] = xi_atom_ask("CLIPBOARD");    /* all five in one round trip */
+    s[1] = xi_atom_ask("UTF8_STRING");
+    s[2] = xi_atom_ask("TARGETS");
+    s[3] = xi_atom_ask("TEXT");
+    s[4] = xi_atom_ask("X11_H_PASTE");
+    xi_a_clipboard = xi_atom_reply(s[0]);
+    xi_a_utf8 = xi_atom_reply(s[1]);
+    xi_a_targets = xi_atom_reply(s[2]);
+    xi_a_text = xi_atom_reply(s[3]);
+    xi_a_paste = xi_atom_reply(s[4]);
 }
 
 /* Put len bytes of UTF-8 text on the clipboard (and the primary selection). */
@@ -3491,6 +3595,26 @@ static inline void x_fence_wait(void)
         xi_handle(b);
     }
     xi_fence_on = 0;
+}
+
+/* Whether the last fence's reply is still to come: reads what has
+ * arrived, but never waits. A program that draws only to show progress
+ * can skip a frame while one is still on its way, instead of waiting. */
+static inline int x_fence_busy(void)
+{
+    unsigned char b[32];
+
+    while (xi_fence_on && !xi_dead) {
+        struct pollfd p;
+
+        p.fd = xi_fd;
+        p.events = POLLIN;
+        p.revents = 0;
+        if (poll(&p, 1, 0) <= 0 || xi_message(b, NULL) < 0)
+            break;
+        xi_handle(b);
+    }
+    return xi_fence_on && !xi_dead;
 }
 
 static inline void x_fence(void)

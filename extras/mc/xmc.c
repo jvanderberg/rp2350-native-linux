@@ -781,7 +781,7 @@ void dlg_show(struct dialog *d)
 {
     dlg_push(d);
     x_present();
-    x_sync();
+    x_fence();
 }
 
 void dlg_hide(struct dialog *d)
@@ -796,11 +796,16 @@ void dlg_paint(void)
         dlg_widgets(&dstack[i]);
 }
 
+/* The progress box of a long job (fileops.c), up to ten times a second:
+ * skipped while the last one is still on its way, so that on a slow link
+ * the job never waits for it; what it shows is caught up the next time. */
 void dlg_redraw(void)
 {
+    if (x_fence_busy())
+        return;
     dlg_paint();
     x_present();
-    x_sync();
+    x_fence();
 }
 
 static int dlg_hit(struct dlgview *v, int x, int y)
@@ -959,7 +964,7 @@ int dlg_run(struct dialog *d)
     dlg_push(d);
     v = &dstack[ndlg - 1];
     x_present();
-    x_sync();
+    x_fence();
     while (result == -2) {
         struct x_event e;
         struct widget *fw;
@@ -2961,7 +2966,7 @@ static void view_file(const char *path)
 {
     static struct tview v;
     struct stat st;
-    int fd, done = 0, rows;
+    int fd, done = 0, rows, have = 0;
     box b, bt;
     char key[KEYLEN], tkey[KEYLEN] = "", search[128] = "", t[PATH_MAX];
     size_t want;
@@ -3016,6 +3021,13 @@ static void view_file(const char *path)
         bt = (box){ b.x + P, b.y + P + font_h(f_bold) + 10, b.w - 2 * P - 8,
                     b.h - 2 * P - font_h(f_bold) - 10 };
         rows = tv_rows(bt);
+        /* Take every event that has come in before drawing, so that keys
+         * held down or a fast wheel make one frame, not one each: on a
+         * slow link each frame is a round trip. */
+        if (!done && !have)
+            have = next_event(&e, 0);
+        if (have)
+            goto handle;
         if (!tkey[0]) {
             x_color(c_bg);
             x_fill_rect(0, M + head_h(), x_width, x_height - M - head_h());
@@ -3051,7 +3063,7 @@ static void view_file(const char *path)
             }
         }
         x_present();
-        x_sync();
+        x_fence();                      /* at most one frame in flight */
         if (done)
             break;
         if (!next_event(&e, -1)) {
@@ -3061,6 +3073,8 @@ static void view_file(const char *path)
             }
             continue;
         }
+handle:
+        have = 0;
         if (resize_pending && now_ms() >= resize_at) {
             resize_pending = 0;
             tkey[0] = 0;

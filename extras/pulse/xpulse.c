@@ -1217,7 +1217,7 @@ static void update(int sampled)
     if (menu.kind)
         menu_paint();                   /* on top of anything just drawn */
     x_present();
-    x_sync();
+    x_fence();                          /* not x_sync: one update in flight */
 }
 
 static void on_key(int key, int *quit)
